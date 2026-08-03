@@ -20,6 +20,11 @@ export function CommandPalette() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setOpen((current) => !current);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        setOpen(false);
       }
     };
 

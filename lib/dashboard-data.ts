@@ -5,9 +5,10 @@ import {
   Dumbbell,
   Droplets,
   FileText,
-  Heart,
   LayoutDashboard,
   MessageSquare,
+  Moon,
+  NotebookPen,
   Scale,
   ScanLine,
   Settings,
@@ -117,35 +118,37 @@ export const navSections: NavSection[] = [
   {
     label: "Overview",
     items: [
-      { label: "Mission Control", href: "/", icon: LayoutDashboard, active: true },
+      { label: "Mission Control", href: "/", icon: LayoutDashboard },
+      { label: "Weekly Review", href: "/weekly-review", icon: NotebookPen },
     ],
   },
   {
     label: "Fitness",
     items: [
-      { label: "Training", href: "#", icon: Dumbbell },
-      { label: "Nutrition", href: "#", icon: Utensils },
-      { label: "Protocols", href: "#", icon: ClipboardList },
+      { label: "Training", href: "/training", icon: Dumbbell },
+      { label: "Nutrition", href: "/nutrition", icon: Utensils },
+      { label: "Treatments", href: "/treatment", icon: ClipboardList },
     ],
   },
   {
     label: "Health",
     items: [
-      { label: "Health", href: "#", icon: Heart },
-      { label: "Progress", href: "#", icon: TrendingUp },
+      { label: "Sleep", href: "/sleep", icon: Moon },
+      { label: "Blood", href: "/blood", icon: Droplets },
+      { label: "Progress", href: "/progress", icon: TrendingUp },
     ],
   },
   {
     label: "AI",
     items: [
-      { label: "AI Coach", href: "#", icon: Bot },
+      { label: "AI Coach", href: "/coach", icon: Bot },
       { label: "Timeline", href: "#", icon: Clock },
-      { label: "Documents", href: "#", icon: FileText },
+      { label: "Data Sources", href: "/import", icon: FileText },
     ],
   },
   {
     label: "Settings",
-    items: [{ label: "Settings", href: "#", icon: Settings }],
+    items: [{ label: "Settings", href: "/settings", icon: Settings }],
   },
 ]
 

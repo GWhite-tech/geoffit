@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { usePathname } from "next/navigation"
 
 import {
   Sidebar,
@@ -13,19 +14,25 @@ import {
 import { navSections, type NavItem } from "@/lib/dashboard-data"
 import { cn } from "@/lib/utils"
 
-function NavItemLink({ item }: { item: NavItem }) {
+function isActivePath(pathname: string, href: string): boolean {
+  if (href === "#") return false
+  if (href === "/") return pathname === "/"
+  return pathname === href || pathname.startsWith(`${href}/`)
+}
+
+function NavItemLink({ item, active }: { item: NavItem; active: boolean }) {
   return (
     <SidebarMenuItem className="relative">
-      {item.active ? (
+      {active ? (
         <span className="absolute top-1/2 left-0 size-1 -translate-y-1/2 rounded-full bg-primary" />
       ) : null}
       <SidebarMenuButton
         render={<Link href={item.href} />}
-        isActive={item.active}
+        isActive={active}
         className={cn(
           "h-12 rounded-lg pl-4 text-[13px] transition-colors",
           "hover:bg-primary/[0.04] data-active:bg-primary/[0.04]",
-          item.active
+          active
             ? "font-medium text-primary hover:text-primary"
             : "font-normal text-muted-foreground/65 hover:text-foreground/75"
         )}
@@ -33,7 +40,7 @@ function NavItemLink({ item }: { item: NavItem }) {
         <item.icon
           className={cn(
             "size-4",
-            item.active ? "text-primary" : "text-muted-foreground/55"
+            active ? "text-primary" : "text-muted-foreground/55"
           )}
         />
         <span>{item.label}</span>
@@ -43,6 +50,8 @@ function NavItemLink({ item }: { item: NavItem }) {
 }
 
 export function AppSidebar() {
+  const pathname = usePathname()
+
   return (
     <Sidebar collapsible="none" className="bg-background">
       <SidebarHeader className="px-5 py-10">
@@ -62,7 +71,11 @@ export function AppSidebar() {
             </p>
             <SidebarMenu className="gap-1.5">
               {section.items.map((item) => (
-                <NavItemLink key={item.label} item={item} />
+                <NavItemLink
+                  key={item.label}
+                  item={item}
+                  active={isActivePath(pathname, item.href)}
+                />
               ))}
             </SidebarMenu>
           </div>

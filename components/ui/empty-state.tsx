@@ -6,7 +6,7 @@ import { AnimatedSurface } from "@/components/ui/animated-surface"
 import { cn } from "@/lib/utils"
 
 interface EmptyStateProps {
-  icon: LucideIcon
+  icon?: LucideIcon
   title: string
   description: string
   action?: React.ReactNode
@@ -23,12 +23,22 @@ export function EmptyState({
   return (
     <AnimatedSurface
       interactive={false}
-      className={cn("flex flex-col items-center px-6 py-12 text-center", className)}
+      className={cn(
+        "surface-functional flex flex-col items-center px-6 py-12 text-center",
+        className
+      )}
     >
-      <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
-        <Icon className="size-5 text-primary" />
-      </div>
-      <h3 className="mt-5 text-lg font-semibold tracking-tight text-foreground">
+      {Icon ? (
+        <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+          <Icon className="size-5 text-primary" />
+        </div>
+      ) : null}
+      <h3
+        className={cn(
+          "text-lg font-semibold tracking-tight text-foreground",
+          Icon ? "mt-5" : ""
+        )}
+      >
         {title}
       </h3>
       <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">

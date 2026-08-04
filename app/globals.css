@@ -146,9 +146,9 @@
 @layer utilities {
   .dashboard-grid-bg {
     background-image: radial-gradient(
-      ellipse 70% 40% at 50% -10%,
-      color-mix(in srgb, var(--primary) 6%, transparent),
-      transparent
+      ellipse 80% 45% at 50% -8%,
+      color-mix(in srgb, var(--primary) 9%, transparent),
+      transparent 70%
     );
   }
 
@@ -166,6 +166,22 @@
 
   .surface-functional-muted {
     @apply rounded-xl border border-border/40 bg-card/70;
+  }
+
+  /* Mission Control elevation */
+  .mc-card {
+    @apply rounded-2xl bg-card/40;
+  }
+
+  .mc-surface-hero {
+    border-radius: 1.5rem;
+    background:
+      radial-gradient(
+        ellipse 70% 60% at 50% 0%,
+        color-mix(in srgb, var(--primary) 10%, transparent),
+        transparent 65%
+      ),
+      color-mix(in srgb, var(--card) 45%, transparent);
   }
 
   .text-status-positive {

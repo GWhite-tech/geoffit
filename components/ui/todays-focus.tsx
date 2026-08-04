@@ -17,6 +17,7 @@ interface TodaysFocusProps {
     coach: string
   }
   protocol: ProtocolItem[]
+  emptyProtocolMessage?: string
   className?: string
 }
 
@@ -46,7 +47,12 @@ function ProtocolRow({ item }: { item: ProtocolItem }) {
   )
 }
 
-export function TodaysFocus({ workout, protocol, className }: TodaysFocusProps) {
+export function TodaysFocus({
+  workout,
+  protocol,
+  emptyProtocolMessage,
+  className,
+}: TodaysFocusProps) {
   return (
     <motion.section
       initial={{ opacity: 0, y: 10 }}
@@ -79,11 +85,17 @@ export function TodaysFocus({ workout, protocol, className }: TodaysFocusProps) 
 
         <div>
           <p className="text-[13px] text-muted-foreground">Protocol</p>
-          <ul className="mt-4">
-            {protocol.map((item) => (
-              <ProtocolRow key={item.id} item={item} />
-            ))}
-          </ul>
+          {protocol.length > 0 ? (
+            <ul className="mt-4">
+              {protocol.map((item) => (
+                <ProtocolRow key={item.id} item={item} />
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-4 text-[14px] leading-relaxed text-muted-foreground">
+              {emptyProtocolMessage ?? "Nothing scheduled"}
+            </p>
+          )}
         </div>
       </div>
     </motion.section>

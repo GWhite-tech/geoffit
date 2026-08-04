@@ -27,14 +27,16 @@ export function MorningBrief({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={transitions.fadeUp}
-      className={cn("surface-soft max-w-[44rem] py-2 lg:py-3", className)}
+      className={cn("max-w-[40rem]", className)}
     >
-      <SectionLabel>Morning Brief</SectionLabel>
-      <h1 className="mt-5 font-sans text-[2.5rem] font-semibold tracking-[-0.02em] text-foreground lg:text-[2.75rem] lg:leading-[1.1]">
+      <SectionLabel className="text-[11px] tracking-[0.2em] text-muted-foreground/70">
+        Morning Brief
+      </SectionLabel>
+      <h1 className="mt-5 font-sans text-[44px] leading-[1.08] font-semibold tracking-[-0.03em] text-foreground">
         {greeting}, {name}.
       </h1>
-      <p className="mt-2 text-[13px] text-muted-foreground">{today}</p>
-      <p className="mt-8 text-[18px] leading-[1.85] text-foreground/85">
+      <p className="mt-3 text-[13px] text-muted-foreground">{today}</p>
+      <p className="mt-8 text-[18px] leading-[1.85] text-foreground/80">
         {body}
       </p>
     </motion.section>

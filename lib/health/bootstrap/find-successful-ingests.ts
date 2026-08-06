@@ -11,6 +11,11 @@ import {
 } from "@/lib/importers/apple-health/ingest-persist-batches"
 import type { DocumentKind } from "@/lib/ingestion/document-kind"
 
+import {
+  readDomainReplayPersistMeta,
+  type DomainReplayPersistMeta,
+} from "./domain-replay/meta"
+
 export type SuccessfulIngestRun = {
   id: string
   documentKind: DocumentKind
@@ -20,6 +25,8 @@ export type SuccessfulIngestRun = {
   stats: Record<string, unknown>
   diagnosticsJson: Record<string, unknown> | null
   appleHealthPersist: AppleHealthPersistMeta | null
+  /** Blood/Hevy staging artefact pointer (temporary bootstrap bridge). */
+  domainReplayPersist: DomainReplayPersistMeta | null
 }
 
 type IngestRow = {
@@ -72,6 +79,11 @@ function mapRow(row: IngestRow): SuccessfulIngestRun | null {
     row.diagnostics_json && typeof row.diagnostics_json === "object"
       ? row.diagnostics_json
       : null
+  const domainReplayPersist =
+    documentKind === "blood_lab_pdf" || documentKind === "hevy_csv"
+      ? readDomainReplayPersistMeta(stats, diagnostics, documentKind)
+      : null
+
   return {
     id: row.id,
     documentKind,
@@ -81,6 +93,7 @@ function mapRow(row: IngestRow): SuccessfulIngestRun | null {
     stats,
     diagnosticsJson: diagnostics,
     appleHealthPersist: persistFromRun(stats, diagnostics),
+    domainReplayPersist,
   }
 }
 

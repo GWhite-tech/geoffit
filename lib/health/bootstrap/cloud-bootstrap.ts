@@ -5,6 +5,9 @@
  * - Does not block login / first paint
  * - Only runs when the relevant store is empty after local hydrate
  * - Uses ingest_runs status=succeeded only (never “newest upload”)
+ * - Prefers domain-replay artefacts (Blood/Hevy) / AH persist batches — no re-parse
+ * - If replay fails (or is missing), falls back to diagnostics / retryDocumentIngest
+ * - After a successful fallback, self-heals by writing the replay artefact
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -15,6 +18,7 @@ import { getWorkoutStore } from "@/lib/health/workout"
 import { confirmParsedImport } from "@/lib/importers/confirm-import"
 import { ingestAppleHealthPersistBatches } from "@/lib/importers/apple-health/ingest-persist-batches"
 import { retryDocumentIngest } from "@/lib/ingestion/client/start-document-ingest"
+import type { ParsedImportData } from "@/lib/importers/Importer"
 
 import {
   BOOTSTRAP_VERSION,
@@ -24,6 +28,12 @@ import {
   type BootstrapDomainResult,
   type BootstrapState,
 } from "./bootstrap-state"
+import { ensureDomainReplayPersist } from "./domain-replay/heal-persist"
+import {
+  ingestBloodDomainReplay,
+  ingestHevyDomainReplay,
+} from "./domain-replay/ingest-persist"
+import type { DomainReplayKind } from "./domain-replay/meta"
 import {
   findLatestSuccessfulIngest,
   listSuccessfulIngests,
@@ -72,6 +82,35 @@ function bloodTestFromDiagnostics(
   return null
 }
 
+async function healReplayAfterFallback(input: {
+  supabase: SupabaseClient
+  userId: string
+  run: SuccessfulIngestRun
+  kind: DomainReplayKind
+  payload?: ParsedImportData | null
+  items?: unknown[]
+}): Promise<void> {
+  try {
+    await ensureDomainReplayPersist({
+      supabase: input.supabase,
+      userId: input.userId,
+      ingestRunId: input.run.id,
+      fileId: input.run.fileId,
+      kind: input.kind,
+      payload: input.payload,
+      items: input.items,
+      existing: input.run.domainReplayPersist,
+    })
+  } catch (error) {
+    // Restore already succeeded locally — heal is best-effort for later devices.
+    console.warn(
+      "[bootstrap] domain-replay heal failed for ingest",
+      input.run.id,
+      error
+    )
+  }
+}
+
 async function restoreAppleHealth(
   supabase: SupabaseClient,
   userId: string
@@ -105,13 +144,22 @@ async function restoreAppleHealth(
   return getHealthStore().getRecordCount() > 0 ? "restored" : "skipped_incomplete"
 }
 
-async function restoreBloodFromRun(
+/** Diagnostics embed or retryDocumentIngest — used when replay is absent or fails. */
+async function restoreBloodViaFallback(
   supabase: SupabaseClient,
+  userId: string,
   run: SuccessfulIngestRun
 ): Promise<void> {
   const fromDiagnostics = bloodTestFromDiagnostics(run.diagnosticsJson)
   if (fromDiagnostics) {
     getBloodStore().ingest([fromDiagnostics])
+    await healReplayAfterFallback({
+      supabase,
+      userId,
+      run,
+      kind: "blood_lab_pdf",
+      items: [fromDiagnostics],
+    })
     return
   }
 
@@ -124,6 +172,36 @@ async function restoreBloodFromRun(
     throw new Error(api.error?.trim() || "Blood re-parse failed")
   }
   await confirmParsedImport("blood-test", api.payload)
+  await healReplayAfterFallback({
+    supabase,
+    userId,
+    run,
+    kind: "blood_lab_pdf",
+    payload: api.payload,
+  })
+}
+
+async function restoreBloodFromRun(
+  supabase: SupabaseClient,
+  userId: string,
+  run: SuccessfulIngestRun
+): Promise<void> {
+  const replay = run.domainReplayPersist
+  if (replay && replay.complete && replay.itemCount > 0) {
+    try {
+      await ingestBloodDomainReplay({ supabase, persist: replay })
+      return
+    } catch (error) {
+      // Replay is an optimisation — fall through to diagnostics/re-parse.
+      console.warn(
+        "[bootstrap] Blood domain-replay failed; falling back",
+        run.id,
+        error
+      )
+    }
+  }
+
+  await restoreBloodViaFallback(supabase, userId, run)
 }
 
 async function restoreBlood(
@@ -141,7 +219,7 @@ async function restoreBlood(
   let restoredAny = false
   for (const run of chronological) {
     try {
-      await restoreBloodFromRun(supabase, run)
+      await restoreBloodFromRun(supabase, userId, run)
       restoredAny = true
     } catch (error) {
       console.warn("[bootstrap] blood restore failed for ingest", run.id, error)
@@ -150,6 +228,29 @@ async function restoreBlood(
   return restoredAny || getBloodStore().getTestCount() > 0
     ? "restored"
     : "error"
+}
+
+async function restoreHevyViaFallback(
+  supabase: SupabaseClient,
+  userId: string,
+  run: SuccessfulIngestRun
+): Promise<void> {
+  const api = await retryDocumentIngest({
+    documentKind: "hevy_csv",
+    fileId: run.fileId,
+    ingestRunId: run.id,
+  })
+  if (!api.success || !api.payload) {
+    throw new Error(api.error?.trim() || "Hevy re-parse failed")
+  }
+  await confirmParsedImport("hevy", api.payload)
+  await healReplayAfterFallback({
+    supabase,
+    userId,
+    run,
+    kind: "hevy_csv",
+    payload: api.payload,
+  })
 }
 
 async function restoreHevy(
@@ -161,16 +262,29 @@ async function restoreHevy(
   const run = await findLatestSuccessfulIngest(supabase, userId, "hevy_csv")
   if (!run) return "skipped_no_ingest"
 
-  const api = await retryDocumentIngest({
-    documentKind: "hevy_csv",
-    fileId: run.fileId,
-    ingestRunId: run.id,
-  })
-  if (!api.success || !api.payload) {
-    console.warn("[bootstrap] Hevy re-parse failed", api.error)
+  const replay = run.domainReplayPersist
+  if (replay && replay.complete && replay.itemCount > 0) {
+    try {
+      await ingestHevyDomainReplay({ supabase, persist: replay })
+      return getWorkoutStore().getAll().length > 0
+        ? "restored"
+        : "skipped_incomplete"
+    } catch (error) {
+      // Replay is an optimisation — fall through to re-parse.
+      console.warn(
+        "[bootstrap] Hevy domain-replay failed; falling back",
+        run.id,
+        error
+      )
+    }
+  }
+
+  try {
+    await restoreHevyViaFallback(supabase, userId, run)
+  } catch (error) {
+    console.warn("[bootstrap] Hevy fallback restore failed", run.id, error)
     return "error"
   }
-  await confirmParsedImport("hevy", api.payload)
   return getWorkoutStore().getAll().length > 0 ? "restored" : "skipped_incomplete"
 }
 

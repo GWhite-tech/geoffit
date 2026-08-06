@@ -1,0 +1,16 @@
+{
+  "provider": "numan-jspdf",
+  "label": "Numan jsPDF image PDF",
+  "minPageCount": 5,
+  "minTotalCharacters": 0,
+  "maxTotalCharacters": 120,
+  "expectedClassification": "image_pdf",
+  "expectedDocumentClass": "image_pdf",
+  "expectedProducerIncludes": "jsPDF",
+  "expectOcrRequired": false,
+  "expectSuccess": false,
+  "expectedFailedStage": "document_classification",
+  "expectedErrorCode": "image_pdf_unsupported",
+  "minBiomarkers": 0,
+  "markers": []
+}

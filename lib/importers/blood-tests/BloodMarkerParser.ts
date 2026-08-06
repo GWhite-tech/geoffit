@@ -1,3 +1,16 @@
+/**
+ * Structure discovered from WeasyPrint Numan extract (do not invent):
+ *
+ *   Line 105: Testosterone
+ *   Line 106: N M O L / L          ← unit alone (letter-spaced)
+ *   Line 107: 11.3 15.0–31.0 LOW  ← value + range + flag together
+ *   Line 108: Free Testosterone   ← next biomarker (no blank separator)
+ *
+ * Rows are 3 lines. Units are on their own line. Flags are NOT alone —
+ * they share the value line. Reference ranges share the value line.
+ * No blank lines between biomarker rows.
+ */
+
 import type {
   BloodMarker,
   BloodMarkerStatus,
@@ -10,16 +23,51 @@ const FLAG_RE =
   /\b(NORMAL|HIGH|LOW|CRITICAL|SEE\s+CLINICAL\s+REVIEW)\b/i
 
 const UNIT_RE =
-  /^(G\/L|G\/DL|U\/L|MMOL\/L|MMOL\/MOL|NMOL\/L|PMOL\/L|MU\/L|NG\/ML|MG\/L|ML\/MIN\/1\.73M2|ML\/MIN\/1\.73M²|RATIO|%|PG|FL|X10\^?\d*\/L|X10⁴⁹\/L|X10⁴¹²\/L|×10[⁹¹²]+\/L)$/i
+  /^(G\/L|G\/DL|U\/L|MMOL\/L|MMOL\/MOL|UMOL\/L|NMOL\/L|PMOL\/L|MU\/L|NG\/ML|MG\/L|UG\/L|ML\/MIN\/1\.73M2|ML\/MIN\/1\.73M²|RATIO|%|PG|FL|X10\^?\d*\/L|X10⁴⁹\/L|X10⁴¹²\/L|×10[⁹¹²]+\/L)$/i
+
+/** Instrumentation for a candidate biomarker row. */
+export type BiomarkerRowAttempt = {
+  matched: boolean
+  reason?: string
+  regexAttempted: string
+  line: string
+  markerName?: string
+  tokensConsumed?: string[]
+  constructedRow?: {
+    biomarker: string
+    value: number | null
+    unit: string
+    referenceRange: string
+    flag: string
+  }
+}
+
+export type BiomarkerParseInstrumentation = {
+  candidateRows: number
+  matchedRows: number
+  ignoredRows: number
+  rowAttempts: BiomarkerRowAttempt[]
+}
+
+function canonicalizeUnitToken(line: string): string {
+  return line
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[Μμµ](?=G\/L)/gi, "U")
+    .replace(/[Μμµ](?=MOL)/gi, "U")
+    .replace(/[Μμµ]/g, "U")
+}
 
 function looksLikeUnit(line: string): boolean {
-  const cleaned = line.trim().replace(/\s+/g, "")
+  const cleaned = canonicalizeUnitToken(line)
   return (
     UNIT_RE.test(cleaned) ||
     UNIT_RE.test(line.trim()) ||
-    /^X10/i.test(cleaned)
+    /^X10/i.test(cleaned) ||
+    cleaned === "%"
   )
 }
+
 const KNOWN_MARKERS = [
   "Albumin",
   "ALP",
@@ -67,17 +115,15 @@ const KNOWN_MARKERS = [
   "WCC",
 ] as const
 
-/** Common OCR / naming normalisations for Numan biomarker identifiers. */
 const NAME_ALIASES: Record<string, string> = {
   hbaic: "HbA1c",
-  "hba1c": "HbA1c",
+  hba1c: "HbA1c",
   haemoglobin: "Haemoglobin",
   hemoglobin: "Haemoglobin",
   "non hdl cholesterol": "Non HDL Cholesterol",
   "cholesterol:hdl ratio": "Cholesterol:HDL Ratio",
   "free t4": "Free T4",
   "free testosterone": "Free Testosterone",
-  /** Numan (and many labs) label total T as "Total Testosterone". */
   "total testosterone": "Testosterone",
   "serum testosterone": "Testosterone",
   testosterone: "Testosterone",
@@ -116,11 +162,11 @@ export interface ParsedBloodHeader {
 export interface BloodMarkerParseResult {
   header: ParsedBloodHeader
   markers: Omit<BloodMarker, "id" | "fingerprint">[]
-  /** Markers found on the page but missing a reliable numeric value. */
   manualEntryRequired: BloodManualEntryMarker[]
   clinicalReview?: string
   warnings: string[]
   rawTextLength: number
+  instrumentation: BiomarkerParseInstrumentation
 }
 
 function slugifyMarker(name: string): string {
@@ -131,16 +177,18 @@ function slugifyMarker(name: string): string {
 }
 
 function normaliseUnit(unit: string): string {
-  const u = unit.trim().toUpperCase()
+  const u = canonicalizeUnitToken(unit).toUpperCase()
   if (/X10.?49\/L|X10\^?9\/L|×10⁹\/L/i.test(u)) return "×10⁹/L"
   if (/X10.?412\/L|X10\^?12\/L|×10¹²\/L/i.test(u)) return "×10¹²/L"
   if (/ML\/MIN\/1\.73M/i.test(u)) return "mL/min/1.73m²"
   if (u === "MMOL/L") return "mmol/L"
   if (u === "MMOL/MOL") return "mmol/mol"
+  if (u === "UMOL/L") return "µmol/L"
   if (u === "NMOL/L") return "nmol/L"
   if (u === "PMOL/L") return "pmol/L"
   if (u === "MU/L") return "mU/L"
   if (u === "NG/ML") return "ng/mL"
+  if (u === "UG/L") return "µg/L"
   if (u === "MG/L") return "mg/L"
   if (u === "G/L") return "g/L"
   if (u === "G/DL") return "g/dL"
@@ -148,6 +196,7 @@ function normaliseUnit(unit: string): string {
   if (u === "PG") return "pg"
   if (u === "FL") return "fL"
   if (u === "RATIO") return "ratio"
+  if (u === "%") return "%"
   return unit.trim()
 }
 
@@ -226,9 +275,6 @@ function parseDateToIso(raw: string): string | undefined {
   return date.toISOString().slice(0, 10)
 }
 
-/**
- * Parse a Numan blood-test PDF text dump (native text or OCR) into structured markers.
- */
 export function parseNumanBloodText(rawText: string): BloodMarkerParseResult {
   const warnings: string[] = []
   const text = rawText.replace(/\u0000/g, "").replace(/\r/g, "")
@@ -239,7 +285,10 @@ export function parseNumanBloodText(rawText: string): BloodMarkerParseResult {
 
   const header = extractHeader(text, lines, warnings)
   const clinicalReview = extractClinicalReview(text)
-  const { markers, manualEntryRequired } = extractMarkers(lines, warnings)
+  const { markers, manualEntryRequired, instrumentation } = extractMarkers(
+    lines,
+    warnings
+  )
   recoverDerivedMarkers(markers, warnings)
 
   if (markers.length === 0 && manualEntryRequired.length === 0) {
@@ -253,13 +302,10 @@ export function parseNumanBloodText(rawText: string): BloodMarkerParseResult {
     clinicalReview,
     warnings,
     rawTextLength: text.length,
+    instrumentation,
   }
 }
 
-/**
- * When OCR drops Non HDL Cholesterol but Cholesterol + HDL are present,
- * derive Non-HDL = Cholesterol − HDL (standard lipid identity).
- */
 function recoverDerivedMarkers(
   markers: Omit<BloodMarker, "id" | "fingerprint">[],
   warnings: string[]
@@ -286,9 +332,8 @@ function recoverDerivedMarkers(
   warnings.push(
     "Non HDL Cholesterol was derived from Cholesterol − HDL because OCR could not read the value."
   )
-  // Drop the earlier OCR-failure warning for this marker if present
-  const idx = warnings.findIndex((w) =>
-    w.includes("Non HDL Cholesterol") && w.includes("garbled")
+  const idx = warnings.findIndex(
+    (w) => w.includes("Non HDL Cholesterol") && w.includes("garbled")
   )
   if (idx >= 0) warnings.splice(idx, 1)
 }
@@ -333,9 +378,11 @@ function extractHeader(
   }
 
   if (!testDate) {
-    const dates = [...text.matchAll(
-      /(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})/gi
-    )].map((m) => m[1])
+    const dates = [
+      ...text.matchAll(
+        /(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})/gi
+      ),
+    ].map((m) => m[1])
     if (dates[0]) testDate = parseDateToIso(dates[0])
     if (dates[1]) exportedAt = parseDateToIso(dates[1])
   }
@@ -371,7 +418,6 @@ function extractClinicalReview(text: string): string | undefined {
 function defaultUnitForMarker(name: string): string {
   switch (name) {
     case "Testosterone":
-      return "nmol/L"
     case "Free Testosterone":
       return "nmol/L"
     case "HbA1c":
@@ -394,119 +440,25 @@ function defaultUnitForMarker(name: string): string {
   }
 }
 
-function captureManualEntry(
-  line: string,
-  nextLine: string | undefined,
-  knownName: string
-): BloodManualEntryMarker {
-  const canonical = normaliseName(knownName)
-  const flagMatch = line.match(FLAG_RE)
-  const status: BloodMarkerStatus = flagMatch
-    ? parseStatus(flagMatch[1] ?? "")
-    : "unknown"
-
-  const beforeFlag =
-    flagMatch && flagMatch.index !== undefined
-      ? line.slice(0, flagMatch.index).trim()
-      : line.trim()
-
-  const rangeMatch = beforeFlag.match(
-    /((?:\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)|(?:[<>]\s*\d+(?:\.\d+)?)|(?:[-–—]))\s*$/
-  )
-
-  let unit = ""
-  if (nextLine && looksLikeUnit(nextLine)) {
-    unit = normaliseUnit(nextLine)
-  }
-  if (!unit) unit = defaultUnitForMarker(canonical)
-
-  return {
-    name: canonical,
-    key: slugifyMarker(canonical),
-    unit,
-    referenceRange: rangeMatch
-      ? parseReferenceRange(rangeMatch[1] ?? "")
-      : { text: "—" },
-    status,
-    reason: `Could not read a reliable value for ${canonical} (OCR may have garbled the number).`,
-  }
+function isSkipLine(line: string): boolean {
+  if (/^Identifier\b/i.test(line)) return true
+  if (/^Page \d+/i.test(line)) return true
+  if (/^Clinical review$/i.test(line)) return true
+  if (/^PATIENT NAME\b/i.test(line)) return true
+  if (/^TEST TAKEN\b/i.test(line)) return true
+  return false
 }
 
-function extractMarkers(
-  lines: string[],
-  warnings: string[]
-): {
-  markers: Omit<BloodMarker, "id" | "fingerprint">[]
-  manualEntryRequired: BloodManualEntryMarker[]
-} {
-  const markers: Omit<BloodMarker, "id" | "fingerprint">[] = []
-  const manualEntryRequired: BloodManualEntryMarker[] = []
-  const seen = new Set<string>()
-  const failedKnown = new Set<string>()
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (/^Identifier\b/i.test(line)) continue
-    if (/^Page \d+/i.test(line)) continue
-    if (/^Clinical review$/i.test(line)) continue
-    if (/^PATIENT NAME\b/i.test(line)) continue
-    if (/^TEST TAKEN\b/i.test(line)) continue
-
-    const knownOnLine = matchKnownMarker(line)
-    const parsed = parseMarkerLine(line, lines[i + 1])
-    if (!parsed) {
-      if (
-        knownOnLine &&
-        FLAG_RE.test(line) &&
-        !failedKnown.has(knownOnLine)
-      ) {
-        failedKnown.add(knownOnLine)
-        const entry = captureManualEntry(line, lines[i + 1], knownOnLine)
-        if (!seen.has(entry.key) && !manualEntryRequired.some((m) => m.key === entry.key)) {
-          manualEntryRequired.push(entry)
-          warnings.push(entry.reason)
-        }
-        if (looksLikeUnit(lines[i + 1] ?? "")) {
-          i += 1
-        }
-      }
-      continue
-    }
-
-    const key = slugifyMarker(parsed.name)
-    if (seen.has(key)) continue
-    seen.add(key)
-
-    if (looksLikeUnit(lines[i + 1] ?? "")) {
-      i += 1
-    }
-
-    markers.push({
-      name: parsed.name,
-      key,
-      value: parsed.value,
-      unit: parsed.unit,
-      referenceRange: parsed.referenceRange,
-      status: parsed.status,
-    })
-  }
-
-  if (markers.length > 0 && markers.length < 5) {
-    warnings.push(
-      `Only ${markers.length} biomarkers were extracted — OCR may have missed rows.`
-    )
-  }
-
-  // Drop markers that also appear in manual entry (prefer asking the user)
-  const manualKeys = new Set(manualEntryRequired.map((m) => m.key))
-  const filteredMarkers = markers.filter((m) => !manualKeys.has(m.key))
-
-  return { markers: filteredMarkers, manualEntryRequired }
+function isSectionBoundary(line: string): boolean {
+  return (
+    /^Identifier\b/i.test(line) ||
+    /^Page \d+/i.test(line) ||
+    /^Clinical review$/i.test(line)
+  )
 }
 
 function matchKnownMarker(line: string): string | null {
   const lower = line.toLowerCase()
-  // Prefer longer names first (Free / Total Testosterone before Testosterone)
   const sorted = [...KNOWN_MARKERS].sort((a, b) => b.length - a.length)
   for (const name of sorted) {
     if (lower.startsWith(name.toLowerCase())) {
@@ -519,95 +471,306 @@ function matchKnownMarker(line: string): string | null {
   return null
 }
 
-/** Recover a value when OCR mangled the token (light noise only). */
+/** Line is exactly a known biomarker name (WeasyPrint row start). */
+function isNameOnlyMarkerLine(line: string, known: string): boolean {
+  return line.slice(known.length).trim().length === 0
+}
+
 function recoverOcrNumber(token: string): number | null {
   const trimmed = token.trim()
   if (!trimmed) return null
-
-  // Prefer an explicit decimal number embedded in the token
   const decimal = trimmed.match(/\d+\.\d+/)
   if (decimal) {
     const value = Number(decimal[0])
     return Number.isFinite(value) ? value : null
   }
-
-  // Reject letter-prefixed garbage like "W183" / "hf)" / "x6}"
   if (/[A-Za-z]/.test(trimmed)) return null
-
   const digits = trimmed.replace(/[^\d.]/g, "")
   if (!digits || !/^\d+(?:\.\d+)?$/.test(digits)) return null
   const value = Number(digits)
   return Number.isFinite(value) ? value : null
 }
 
-function parseMarkerLine(
-  line: string,
-  nextLine?: string
-): {
-  name: string
+type ConstructedFields = {
   value: number
   unit: string
   referenceRange: BloodReferenceRange
   status: BloodMarkerStatus
-} | null {
-  const flagMatch = line.match(FLAG_RE)
-  if (!flagMatch || flagMatch.index === undefined) return null
+  flagRaw: string
+}
 
-  // Ignore narrative mentions — table rows put the flag at/near the end
-  const afterFlag = line.slice(flagMatch.index + flagMatch[0].length).trim()
-  if (afterFlag.length > 8) return null
+/**
+ * Build fields from tokens between this biomarker and the next.
+ * Observed WeasyPrint window: ["NMOL/L", "11.3 15.0–31.0 LOW"]
+ * Observed OCR window: remainder of same line + optional unit line.
+ */
+function constructFromTokens(
+  biomarker: string,
+  tokens: string[]
+): { ok: true; fields: ConstructedFields } | { ok: false; reason: string } {
+  let unit = ""
+  const contentParts: string[] = []
 
-  const status = parseStatus(flagMatch[1])
-  const beforeFlag = line.slice(0, flagMatch.index).trim()
+  for (const token of tokens) {
+    if (looksLikeUnit(token)) {
+      if (!unit) unit = normaliseUnit(token)
+      continue
+    }
+    contentParts.push(token)
+  }
 
-  const cleaned = beforeFlag
-    .replace(/[©®@●•·]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
+  const content = contentParts.join(" ").replace(/\s+/g, " ").trim()
+  if (!content) {
+    return { ok: false, reason: "no value/flag tokens after biomarker name" }
+  }
 
-  const rangeMatch = cleaned.match(
+  const flagMatch = content.match(FLAG_RE)
+  if (!flagMatch || flagMatch.index === undefined) {
+    return { ok: false, reason: "flag not found in token window" }
+  }
+
+  const afterFlag = content.slice(flagMatch.index + flagMatch[0].length).trim()
+  if (afterFlag.length > 8) {
+    return { ok: false, reason: "flag not at end of token window (narrative)" }
+  }
+
+  const flagRaw = flagMatch[1] ?? ""
+  const status = parseStatus(flagRaw)
+  const beforeFlag = content.slice(0, flagMatch.index).trim()
+
+  const rangeMatch = beforeFlag.match(
     /((?:\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)|(?:[<>]\s*\d+(?:\.\d+)?)|(?:[-–—]))\s*$/
   )
-  if (!rangeMatch || rangeMatch.index === undefined) return null
+  if (!rangeMatch || rangeMatch.index === undefined) {
+    return { ok: false, reason: "reference range not found in token window" }
+  }
 
   const rangeText = rangeMatch[1]?.trim() ?? ""
-  const beforeRange = cleaned.slice(0, rangeMatch.index).trim()
+  const beforeRange = beforeFlag.slice(0, rangeMatch.index).trim()
 
-  const known = matchKnownMarker(beforeRange)
-  let name: string
-  let value: number
+  // Strip leading biomarker name if still present (single-line OCR rows).
+  let valueSource = beforeRange
+  if (beforeRange.toLowerCase().startsWith(biomarker.toLowerCase())) {
+    const boundary = beforeRange[biomarker.length]
+    if (!boundary || /[\s\d]/.test(boundary) || /[^A-Za-z]/.test(boundary)) {
+      valueSource = beforeRange.slice(biomarker.length).trim()
+    }
+  }
 
-  const cleanValueMatch = beforeRange.match(/^(.+?)\s+(\d+(?:\.\d+)?)\s*$/)
-
+  const cleanValueMatch = valueSource.match(/^(\d+(?:\.\d+)?)\s*$/)
+  let value: number | null = null
   if (cleanValueMatch) {
-    name = normaliseName(known ?? cleanValueMatch[1] ?? "")
-    value = Number(cleanValueMatch[2])
-  } else if (known) {
-    const remainder = beforeRange.slice(known.length).trim()
-    const token = remainder.split(/\s+/)[0] ?? ""
-    const recovered = recoverOcrNumber(token)
-    if (recovered === null) return null
-    name = normaliseName(known)
-    value = recovered
+    value = Number(cleanValueMatch[1])
   } else {
-    return null
+    const token = valueSource.split(/\s+/)[0] ?? ""
+    value = recoverOcrNumber(token)
   }
 
-  if (!Number.isFinite(value)) return null
-  if (name.length < 2 || name.length > 48) return null
-  if (/^(observation|normal|value|flags|identifier)$/i.test(name)) return null
-
-  let unit = ""
-  if (nextLine && looksLikeUnit(nextLine)) {
-    unit = normaliseUnit(nextLine)
+  if (value === null || !Number.isFinite(value)) {
+    return { ok: false, reason: "numeric value not found in token window" }
   }
+
+  if (!unit) unit = defaultUnitForMarker(biomarker)
 
   return {
-    name,
-    value,
-    unit,
-    referenceRange: parseReferenceRange(rangeText),
-    status,
+    ok: true,
+    fields: {
+      value,
+      unit,
+      referenceRange: parseReferenceRange(rangeText),
+      status,
+      flagRaw,
+    },
+  }
+}
+
+/**
+ * Collect lines after a name-only biomarker until the next biomarker name
+ * or a section boundary. This is the semantic row — not one-line regex.
+ */
+function collectTokenWindow(
+  lines: string[],
+  startIndex: number
+): { tokens: string[]; endExclusive: number } {
+  const tokens: string[] = []
+  let j = startIndex + 1
+  while (j < lines.length) {
+    const line = lines[j]
+    if (isSectionBoundary(line)) break
+    const nextKnown = matchKnownMarker(line)
+    if (nextKnown && isNameOnlyMarkerLine(line, nextKnown)) break
+    tokens.push(line)
+    j += 1
+  }
+  return { tokens, endExclusive: j }
+}
+
+function extractMarkers(
+  lines: string[],
+  warnings: string[]
+): {
+  markers: Omit<BloodMarker, "id" | "fingerprint">[]
+  manualEntryRequired: BloodManualEntryMarker[]
+  instrumentation: BiomarkerParseInstrumentation
+} {
+  const markers: Omit<BloodMarker, "id" | "fingerprint">[] = []
+  const manualEntryRequired: BloodManualEntryMarker[] = []
+  const seen = new Set<string>()
+  const rowAttempts: BiomarkerRowAttempt[] = []
+  let candidateRows = 0
+  let matchedRows = 0
+  let ignoredRows = 0
+
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i]
+
+    if (isSkipLine(line)) {
+      ignoredRows += 1
+      i += 1
+      continue
+    }
+
+    const knownOnLine = matchKnownMarker(line)
+
+    // Narrative / non-marker lines
+    if (!knownOnLine) {
+      ignoredRows += 1
+      i += 1
+      continue
+    }
+
+    // Title lines like "Testosterone Venous Blood Test…" — not a table row.
+    if (!isNameOnlyMarkerLine(line, knownOnLine) && !FLAG_RE.test(line)) {
+      ignoredRows += 1
+      i += 1
+      continue
+    }
+
+    candidateRows += 1
+    const biomarker = normaliseName(knownOnLine)
+
+    let tokens: string[]
+    let endExclusive: number
+    let strategy: string
+
+    if (isNameOnlyMarkerLine(line, knownOnLine)) {
+      // WeasyPrint / flattened digital PDF: name, then tokens until next name.
+      const window = collectTokenWindow(lines, i)
+      tokens = window.tokens
+      endExclusive = window.endExclusive
+      strategy = "semantic_window:name→next_biomarker"
+    } else {
+      // Classic single-line OCR: Name Value Range FLAG [+ unit on next line]
+      tokens = [line]
+      endExclusive = i + 1
+      if (looksLikeUnit(lines[i + 1] ?? "")) {
+        tokens.push(lines[i + 1]!)
+        endExclusive = i + 2
+      }
+      strategy = "semantic_window:single_line[+unit]"
+    }
+
+    const constructed = constructFromTokens(biomarker, tokens)
+    const constructedRow = {
+      biomarker,
+      value: constructed.ok ? constructed.fields.value : null,
+      unit: constructed.ok
+        ? constructed.fields.unit
+        : tokens.find((t) => looksLikeUnit(t))
+          ? normaliseUnit(tokens.find((t) => looksLikeUnit(t))!)
+          : defaultUnitForMarker(biomarker),
+      referenceRange: constructed.ok
+        ? constructed.fields.referenceRange.text
+        : "—",
+      flag: constructed.ok ? constructed.fields.flagRaw : "",
+    }
+
+    if (!constructed.ok) {
+      // Garbled value with flag still present → manual entry
+      if (FLAG_RE.test(tokens.join(" "))) {
+        const key = slugifyMarker(biomarker)
+        if (!seen.has(key) && !manualEntryRequired.some((m) => m.key === key)) {
+          const entry: BloodManualEntryMarker = {
+            name: biomarker,
+            key,
+            unit: constructedRow.unit,
+            referenceRange: { text: constructedRow.referenceRange },
+            status: "unknown",
+            reason: `Could not read a reliable value for ${biomarker} (OCR may have garbled the number).`,
+          }
+          manualEntryRequired.push(entry)
+          warnings.push(entry.reason)
+        }
+      }
+      rowAttempts.push({
+        matched: false,
+        reason: constructed.reason,
+        regexAttempted: strategy,
+        line: [line, ...tokens].join(" | "),
+        markerName: biomarker,
+        tokensConsumed: tokens,
+        constructedRow,
+      })
+      i = Math.max(endExclusive, i + 1)
+      continue
+    }
+
+    const key = slugifyMarker(biomarker)
+    if (seen.has(key)) {
+      rowAttempts.push({
+        matched: false,
+        reason: "duplicate marker key skipped",
+        regexAttempted: strategy,
+        line: [line, ...tokens].join(" | "),
+        markerName: biomarker,
+        tokensConsumed: tokens,
+        constructedRow,
+      })
+      i = Math.max(endExclusive, i + 1)
+      continue
+    }
+    seen.add(key)
+    matchedRows += 1
+
+    rowAttempts.push({
+      matched: true,
+      regexAttempted: strategy,
+      line: [line, ...tokens].join(" | "),
+      markerName: biomarker,
+      tokensConsumed: tokens,
+      constructedRow,
+    })
+
+    markers.push({
+      name: biomarker,
+      key,
+      value: constructed.fields.value,
+      unit: constructed.fields.unit,
+      referenceRange: constructed.fields.referenceRange,
+      status: constructed.fields.status,
+    })
+
+    i = Math.max(endExclusive, i + 1)
+  }
+
+  if (markers.length > 0 && markers.length < 5) {
+    warnings.push(
+      `Only ${markers.length} biomarkers were extracted — OCR may have missed rows.`
+    )
+  }
+
+  const manualKeys = new Set(manualEntryRequired.map((m) => m.key))
+  const filteredMarkers = markers.filter((m) => !manualKeys.has(m.key))
+
+  return {
+    markers: filteredMarkers,
+    manualEntryRequired,
+    instrumentation: {
+      candidateRows,
+      matchedRows,
+      ignoredRows,
+      rowAttempts,
+    },
   }
 }
 

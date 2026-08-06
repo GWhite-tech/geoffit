@@ -7,8 +7,9 @@
  *     expectations.json   — assertions (required)
  *
  * The regression harness discovers every provider folder that has both files.
- * No framework code changes are required for Medichecks / Randox / NHS / Optimale.
  */
+
+import type { PdfClassification } from "./types"
 
 export type BloodLabFixtureExpectations = {
   /** Provider id folder name, e.g. "numan". */
@@ -19,23 +20,39 @@ export type BloodLabFixtureExpectations = {
   minPageCount: number
   /** Minimum extracted character count (digital PDFs). */
   minTotalCharacters: number
-  /** Expected provider string from parser. */
-  expectedProvider: string
+  /** Maximum extracted characters (image PDFs). */
+  maxTotalCharacters?: number
+  /** Expected provider string from parser (digital fixtures). */
+  expectedProvider?: string
   /** ISO date YYYY-MM-DD, or null to only assert date is present. */
-  expectedTestDate: string | null
-  /** Minimum biomarker count. */
-  minBiomarkers: number
+  expectedTestDate?: string | null
+  /** Minimum biomarker count (0 for classification-only fixtures). */
+  minBiomarkers?: number
   /** Specific marker assertions (key → value/unit). */
-  markers: Array<{
+  markers?: Array<{
     key: string
     value: number
     unitPattern: string
   }>
-  /** Expected document class from classifier. */
-  expectedDocumentClass?:
-    | "digital_selectable"
-    | "image_only"
-    | "mixed"
+  /** Expected PDF classification. */
+  expectedClassification?: PdfClassification
+  /** @deprecated Prefer expectedClassification. */
+  expectedDocumentClass?: PdfClassification
+  /** Producer substring, e.g. "WeasyPrint" or "jsPDF". */
+  expectedProducerIncludes?: string
+  /** Expected OCR decision. */
+  expectOcrRequired?: boolean
+  /**
+   * Whether the full pipeline should succeed.
+   * Classification-only image fixtures set this to false.
+   */
+  expectSuccess?: boolean
+  /** Only assert classification / producer / OCR — skip biomarker success. */
+  classificationOnly?: boolean
+  /** Expected failed stage when expectSuccess is false. */
+  expectedFailedStage?: string | null
+  /** Expected error code when expectSuccess is false. */
+  expectedErrorCode?: string | null
 }
 
 export const FIXTURE_ROOT_RELATIVE = "fixtures/blood-lab-pdfs"

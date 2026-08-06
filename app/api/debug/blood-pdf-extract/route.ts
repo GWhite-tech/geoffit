@@ -91,6 +91,7 @@ export async function POST(request: Request) {
           // Keep page previews; full text separately for comparison.
         },
         classification: result.stages.classification,
+        textNormalisation: result.stages.textNormalisation,
         providerDetection: result.stages.providerDetection,
         biomarkerParsing: result.stages.biomarkerParsing,
         validation: result.stages.validation,

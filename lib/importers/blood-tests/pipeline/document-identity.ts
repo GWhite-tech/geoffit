@@ -55,9 +55,14 @@ async function loadNumanFixtureIdentity(): Promise<{
   readable: boolean
   path: string
 }> {
-  const path = join(process.cwd(), NUMAN_FIXTURE_RELATIVE_PATH)
+  // Fixture compare is diagnostics-only. Ignore for NFT — do not pull fixtures/
+  // or the whole project into the serverless package.
+  const path = join(
+    /* turbopackIgnore: true */ process.cwd(),
+    NUMAN_FIXTURE_RELATIVE_PATH
+  )
   try {
-    const buf = await readFile(path)
+    const buf = await readFile(/* turbopackIgnore: true */ path)
     return {
       path,
       byteLength: buf.byteLength,

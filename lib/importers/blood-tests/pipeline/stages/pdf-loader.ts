@@ -115,13 +115,15 @@ export async function runPdfLoaderStage(
       const wasmPath = assetUrls.wasmUrl
       console.info({
         scope: "pdfjs-assets-before-getDocument",
-        standardFontsExists: existsSync(standardFontsPath),
-        cMapsExists: existsSync(cMapsPath),
-        wasmExists: existsSync(wasmPath),
+        standardFontsExists: existsSync(
+          /* turbopackIgnore: true */ standardFontsPath
+        ),
+        cMapsExists: existsSync(/* turbopackIgnore: true */ cMapsPath),
+        wasmExists: existsSync(/* turbopackIgnore: true */ wasmPath),
         standardFontsPath,
         cMapsPath,
         wasmPath,
-        cwd: process.cwd(),
+        cwd: /* turbopackIgnore: true */ process.cwd(),
       })
 
       doc = await pdfjs.getDocument({

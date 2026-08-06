@@ -1,0 +1,23 @@
+{
+  "provider": "numan-weasyprint",
+  "label": "Numan WeasyPrint digital text PDF",
+  "minPageCount": 5,
+  "minTotalCharacters": 5000,
+  "expectedClassification": "digital_text",
+  "expectedDocumentClass": "digital_text",
+  "expectedProducerIncludes": "WeasyPrint",
+  "expectOcrRequired": false,
+  "expectSuccess": true,
+  "expectedProvider": "Numan",
+  "minBiomarkers": 35,
+  "markers": [
+    { "key": "testosterone", "value": 11.3, "unitPattern": "nmol\\/L" },
+    { "key": "free_testosterone", "value": 0.254, "unitPattern": "nmol\\/L" },
+    { "key": "hba1c", "value": 45, "unitPattern": "mmol\\/mol" },
+    { "key": "ldl", "value": 2.5, "unitPattern": "mmol\\/L" },
+    { "key": "hdl", "value": 1.0, "unitPattern": "mmol\\/L" },
+    { "key": "estradiol", "value": 200, "unitPattern": "pmol\\/L" },
+    { "key": "fsh", "value": 1.2, "unitPattern": "U\\/L" },
+    { "key": "urea", "value": 8.7, "unitPattern": "mmol\\/L" }
+  ]
+}

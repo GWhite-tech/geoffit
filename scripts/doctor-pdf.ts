@@ -21,17 +21,19 @@ import { assertPdfEnvironmentHealthy } from "../lib/importers/blood-tests/pdf-en
 import { logPdfBytesBeforeGetDocument } from "../lib/importers/blood-tests/pdf-bytes-fingerprint"
 
 const MIN_EXTRACTED_CHARS = 5000
-const FIXTURE = join(
-  process.cwd(),
-  "fixtures",
-  "blood-lab-pdfs",
-  "numan",
-  "report.pdf"
-)
 
 type Check = { name: string; ok: boolean; detail?: string }
 
 async function main(): Promise<void> {
+  // Fixture path resolved only when the doctor runs — never at module import.
+  const FIXTURE = join(
+    process.cwd(),
+    "fixtures",
+    "blood-lab-pdfs",
+    "numan",
+    "report.pdf"
+  )
+
   const checks: Check[] = []
   const fail = (name: string, detail: string): never => {
     checks.push({ name, ok: false, detail })

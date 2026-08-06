@@ -6,7 +6,10 @@
   "expectedProvider": "Numan",
   "expectedTestDate": "2026-03-15",
   "minBiomarkers": 30,
-  "expectedDocumentClass": "digital_selectable",
+  "expectedDocumentClass": "digital_text",
+  "expectedClassification": "digital_text",
+  "expectOcrRequired": false,
+  "expectSuccess": true,
   "markers": [
     {
       "key": "testosterone",

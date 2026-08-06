@@ -160,16 +160,20 @@ export async function probePdfEnvironment(): Promise<{
   } catch (error) {
     // Still record existsSync against expected cwd paths for the report.
     const { join } = await import("node:path")
-    const pdfjsRoot = join(process.cwd(), "node_modules", "pdfjs-dist")
+    const pdfjsRoot = join(
+      /* turbopackIgnore: true */ process.cwd(),
+      "node_modules",
+      "pdfjs-dist"
+    )
     paths = {
       pdfjsRoot,
       standardFonts: join(pdfjsRoot, "standard_fonts") + "/",
       cmaps: join(pdfjsRoot, "cmaps") + "/",
       wasm: join(pdfjsRoot, "wasm") + "/",
     }
-    standardFonts = existsSync(paths.standardFonts)
-    cmaps = existsSync(paths.cmaps)
-    wasm = existsSync(paths.wasm)
+    standardFonts = existsSync(/* turbopackIgnore: true */ paths.standardFonts)
+    cmaps = existsSync(/* turbopackIgnore: true */ paths.cmaps)
+    wasm = existsSync(/* turbopackIgnore: true */ paths.wasm)
     failures.push(
       error instanceof Error ? error.message : `assets_failed:${String(error)}`
     )
@@ -185,7 +189,7 @@ export async function probePdfEnvironment(): Promise<{
     pdfjsVersion,
     nodeVersion: process.versions.node,
     runtime: "node",
-    cwd: process.cwd(),
+    cwd: /* turbopackIgnore: true */ process.cwd(),
     assets: {
       standardFonts,
       cmaps,

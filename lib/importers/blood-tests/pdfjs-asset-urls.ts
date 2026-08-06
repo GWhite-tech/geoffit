@@ -1,9 +1,9 @@
 /**
  * pdf.js asset directory locations — ESM-safe, no createRequire / require.resolve.
  *
- * Paths are static under process.cwd()/node_modules/pdfjs-dist.
- * On Vercel those directories must be present via next.config outputFileTracingIncludes;
- * this helper proves they exist at runtime (throws PDFJS_ASSETS_NOT_FOUND if not).
+ * Paths are under process.cwd()/node_modules/pdfjs-dist at runtime.
+ * process.cwd() is marked turbopackIgnore so NFT does not fall back to
+ * tracing the entire project (which invalidates the Vercel serverless package).
  */
 
 import { existsSync } from "node:fs"
@@ -48,7 +48,7 @@ export class PdfJsAssetsNotFoundError extends Error {
     super(
       [
         "PDFJS_ASSETS_NOT_FOUND",
-        `cwd=${process.cwd()}`,
+        `cwd=${/* turbopackIgnore: true */ process.cwd()}`,
         `pdfjsRoot=${paths.pdfjsRoot}`,
         `standardFonts=${paths.standardFonts} exists=${paths.standardFontsExists}`,
         `cMaps=${paths.cMaps} exists=${paths.cMapsExists}`,
@@ -70,12 +70,22 @@ export class PdfJsAssetsNotFoundError extends Error {
   }
 }
 
+function pdfjsRootDir(): string {
+  // Scoped to node_modules/pdfjs-dist only — ignore cwd for NFT whole-project fallback.
+  return join(
+    /* turbopackIgnore: true */ process.cwd(),
+    "node_modules",
+    "pdfjs-dist"
+  )
+}
+
 /**
  * Resolve + validate pdf.js asset dirs. Throws PDFJS_ASSETS_NOT_FOUND if any
- * directory is missing (proves whether Vercel tracing actually shipped them).
+ * directory is missing (proves whether the deployment shipped them).
+ * Call only at request time — never at module top level.
  */
 export function getPdfJsAssetPaths(): PdfJsAssetPaths {
-  const pdfjsRoot = join(process.cwd(), "node_modules", "pdfjs-dist")
+  const pdfjsRoot = pdfjsRootDir()
   const standardFonts = join(pdfjsRoot, "standard_fonts") + "/"
   const cMaps = join(pdfjsRoot, "cmaps") + "/"
   const wasm = join(pdfjsRoot, "wasm") + "/"
@@ -85,9 +95,9 @@ export function getPdfJsAssetPaths(): PdfJsAssetPaths {
     standardFonts,
     cMaps,
     wasm,
-    standardFontsExists: existsSync(standardFonts),
-    cMapsExists: existsSync(cMaps),
-    wasmExists: existsSync(wasm),
+    standardFontsExists: existsSync(/* turbopackIgnore: true */ standardFonts),
+    cMapsExists: existsSync(/* turbopackIgnore: true */ cMaps),
+    wasmExists: existsSync(/* turbopackIgnore: true */ wasm),
   }
 
   if (

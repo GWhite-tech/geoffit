@@ -1,9 +1,9 @@
 /**
  * OCR stage for blood lab PDFs.
  *
- * MUST only be dynamically imported after classification sets ocrRequired=true
- * (documentClass === "image_only"). Never statically imported from pdf_loader
- * or text_extraction.
+ * MUST only be dynamically imported after classification sets ocrRequired=true.
+ * image_pdf never sets ocrRequired (Vercel: no OCR; ask for text-based export).
+ * Never statically imported from pdf_loader or text_extraction.
  */
 
 import type { OcrDiagnostics, StageResult } from "../types"
@@ -50,7 +50,7 @@ export async function runOcrStage(
       diagnostics: {
         attempted: false,
         skippedReason:
-          "OCR stage entered for image_only, but PDF raster OCR is not implemented yet.",
+          "OCR stage entered but PDF raster OCR is not implemented yet.",
         method: "none",
         pageCount: input.pageCount,
         warnings,

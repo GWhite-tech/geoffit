@@ -11,8 +11,9 @@ import {
 
 import { runPdfLoaderStage } from "./stages/pdf-loader"
 import { runTextExtractionStage } from "./stages/extract-text"
-import { runDocumentClassificationStage } from "./stages/classify-document"
+import { runDocumentClassificationStage, formatImagePdfUserMessage } from "./stages/classify-document"
 import { skippedOcrStage } from "./stages/ocr-skip"
+import { runTextNormalisationStage } from "./stages/text-normalisation"
 import { runProviderDetectionStage } from "./stages/detect-provider"
 import { runBiomarkerParsingStage } from "./stages/parse-biomarkers"
 import { runValidationStage } from "./stages/validate"
@@ -23,6 +24,7 @@ import type {
   OcrDiagnostics,
   PipelineStructuredLog,
   StageResult,
+  TextNormalisationDiagnostics,
 } from "./types"
 
 function emptyLoaderStage(): StageResult<
@@ -51,13 +53,48 @@ function emptyOcrStage(
   return skippedOcrStage("not run", 0, selectableText)
 }
 
+function emptyTextNormalisationStage(
+  text = ""
+): StageResult<TextNormalisationDiagnostics, { text: string }> {
+  return {
+    stage: "text_normalisation",
+    status: "skipped",
+    durationMs: 0,
+    diagnostics: {
+      inputChars: text.length,
+      outputChars: text.length,
+      unitsCollapsed: 0,
+      numbersCollapsed: 0,
+      first1000Chars: text.slice(0, 1000),
+      last1000Chars: text.slice(Math.max(0, text.length - 1000)),
+      rawArtifactPath: null,
+      normalisedArtifactPath: null,
+    },
+    data: { text },
+  }
+}
+
+function emptyBiomarkerParsingDiagnostics(): BloodPdfPipelineResult["stages"]["biomarkerParsing"]["diagnostics"] {
+  return {
+    markerCount: 0,
+    manualEntryCount: 0,
+    markerNames: [],
+    warnings: [],
+    candidateRows: 0,
+    matchedRows: 0,
+    ignoredRows: 0,
+    rowAttempts: [],
+  }
+}
+
 /**
  * Explicit staged blood-PDF pipeline (parser-internal).
  *
  * Order: pdf_loader → text_extraction → classification → [ocr?] →
- * provider → biomarkers → validation → fact_writer (deferred).
+ * text_normalisation → provider → biomarkers → validation → fact_writer (deferred).
  *
  * OCR is dynamically imported ONLY when classification.ocrRequired === true.
+ * image_pdf never sets ocrRequired — returns a clear user-facing error instead.
  */
 export async function runBloodPdfPipeline(
   bytes: Uint8Array,
@@ -112,19 +149,122 @@ export async function runBloodPdfPipeline(
     errorCode = "pdf_text_failed"
   }
 
-  // 3. Document Classification — digital_selectable | image_only | mixed.
-  const classification = runDocumentClassificationStage(
+  // 3. Document Classification — digital_text | mixed | image_pdf | unknown.
+  const identity = pdfLoader.stage.diagnostics.documentIdentity
+  const classification = await runDocumentClassificationStage(
     extractedText,
-    textExtraction.diagnostics
+    textExtraction.diagnostics,
+    pdfLoader.loaded,
+    {
+      producer: identity?.producer ?? null,
+      creator: identity?.creator ?? null,
+      pdfVersion: pdfLoader.stage.diagnostics.pdfVersion,
+    }
   )
-  warnings.push(classification.diagnostics.reason)
+  warnings.push(...classification.diagnostics.reason)
 
-  // 4. OCR — ONLY if classification.ocrRequired (image_only). Dynamic import.
+  // image_pdf: do not OCR on Vercel — stop with an actionable message.
+  if (classification.diagnostics.classification === "image_pdf") {
+    failedStage = "document_classification"
+    errorCode = "image_pdf_unsupported"
+    error = formatImagePdfUserMessage({
+      producer: classification.diagnostics.producer,
+      producerFamily: classification.diagnostics.producerFamily,
+      pageCount: classification.diagnostics.pageCount,
+      confidence: classification.diagnostics.confidence,
+    })
+    const ocrStage = skippedOcrStage(
+      `classification=image_pdf; OCR disabled on Vercel`,
+      textExtraction.diagnostics.pageCount,
+      extractedText
+    )
+    const textNormalisation = emptyTextNormalisationStage(extractedText)
+    const structuredLog = buildStructuredLog({
+      textExtraction,
+      classification,
+      failedStage,
+      stages: [
+        pdfLoader.stage,
+        textExtraction,
+        classification,
+        ocrStage,
+        textNormalisation,
+        {
+          stage: "provider_detection",
+          status: "skipped",
+          durationMs: 0,
+        },
+        {
+          stage: "biomarker_parsing",
+          status: "skipped",
+          durationMs: 0,
+        },
+        {
+          stage: "validation",
+          status: "skipped",
+          durationMs: 0,
+        },
+        {
+          stage: "fact_writer",
+          status: "skipped",
+          durationMs: 0,
+        },
+      ],
+    })
+    logStructuredExtractSummary(structuredLog)
+    return {
+      success: false,
+      failedStage,
+      error,
+      errorCode,
+      warnings: dedupe(warnings),
+      extractedText,
+      structuredLog,
+      stages: {
+        pdfLoader: pdfLoader.stage,
+        textExtraction,
+        classification,
+        ocr: ocrStage,
+        textNormalisation,
+        providerDetection: {
+          stage: "provider_detection",
+          status: "skipped",
+          durationMs: 0,
+          diagnostics: {
+            provider: "Unknown",
+            detectedAsNuman: false,
+            panelName: "Blood Test",
+            testDate: null,
+            evidence: [],
+          },
+        },
+        biomarkerParsing: {
+          stage: "biomarker_parsing",
+          status: "skipped",
+          durationMs: 0,
+          diagnostics: emptyBiomarkerParsingDiagnostics(),
+        },
+        validation: {
+          stage: "validation",
+          status: "skipped",
+          durationMs: 0,
+          diagnostics: { valid: false, errors: [], warnings: [] },
+        },
+      },
+      bloodTest: null,
+      biomarkers: [],
+      manualEntryRequired: [],
+      preview: null,
+    }
+  }
+
+  // 4. OCR — ONLY if classification.ocrRequired. Dynamic import.
+  // (image_pdf never reaches here; ocrRequired is always false for that class.)
   let ocrStage: StageResult<OcrDiagnostics, { text: string }>
   if (classification.diagnostics.ocrRequired) {
     logBloodPdfPipeline("ocr_dynamic_import", {
       reason: "classification.ocrRequired === true",
-      documentClass: classification.diagnostics.documentClass,
+      classification: classification.diagnostics.classification,
     })
     try {
       const { runOcrStage } = await import("./stages/ocr")
@@ -163,13 +303,22 @@ export async function runBloodPdfPipeline(
     }
   } else {
     ocrStage = skippedOcrStage(
-      `classification=${classification.diagnostics.documentClass}; ocrRequired=false`,
+      `classification=${classification.diagnostics.classification}; ocrRequired=false`,
       textExtraction.diagnostics.pageCount,
       extractedText
     )
   }
 
-  // 5–6. Provider + biomarkers + validation on current text.
+  // 5. Text normalisation — formatting cleanup only (units / unicode / whitespace).
+  const textNormalisation = await runTextNormalisationStage(
+    extractedText,
+    fileName
+  )
+  const parseText = textNormalisation.data?.text ?? extractedText
+  // Keep extractedText as the text used downstream (normalised for digital PDFs).
+  extractedText = parseText
+
+  // 6–7. Provider + biomarkers + validation on normalised text.
   let providerDetection = runProviderDetectionStage(extractedText, {
     provider: "Unknown",
     panelName: "Blood Test",
@@ -238,6 +387,7 @@ export async function runBloodPdfPipeline(
       textExtraction,
       classification,
       ocrStage,
+      textNormalisation,
       providerDetection,
       biomarkerParsing,
       validation,
@@ -255,6 +405,7 @@ export async function runBloodPdfPipeline(
     textExtraction,
     classification,
     ocr: ocrStage,
+    textNormalisation,
     providerDetection,
     biomarkerParsing,
     validation,
@@ -320,9 +471,13 @@ function buildStructuredLog(input: {
       extractedTextLength: 0,
     },
     parserDecision: {
-      documentClass: cl?.documentClass ?? "image_only",
-      reason: cl?.reason ?? "classification not run",
+      classification: cl?.classification ?? "unknown",
+      documentClass: cl?.classification ?? "unknown",
+      confidence: cl?.confidence ?? 0,
+      reason: cl?.reason ?? ["classification not run"],
       ocrRequired: cl?.ocrRequired ?? false,
+      producer: cl?.producer ?? null,
+      producerFamily: cl?.producerFamily ?? "Unknown",
       failedStage: input.failedStage,
     },
     stages: input.stages.map((s) => ({
@@ -373,13 +528,24 @@ function failResult(input: {
         stage: "document_classification",
         ...skipped,
         diagnostics: {
-          documentClass: "image_only",
+          classification: "unknown",
+          documentClass: "unknown",
+          confidence: 0,
+          reason: ["skipped — PDF loader failed"],
           totalChars: 0,
           pageCount: 0,
           charsPerPage: [],
           avgCharsPerPage: 0,
-          minCharsForDigital: 500,
-          reason: "skipped — PDF loader failed",
+          textItemCount: 0,
+          pagesWithMeaningfulText: 0,
+          percentPagesWithMeaningfulText: 0,
+          embeddedImageCount: 0,
+          avgImageCoveragePercent: 0,
+          producer: null,
+          producerFamily: "Unknown",
+          creator: null,
+          pdfVersion: null,
+          pages: [],
           ocrRequired: false,
           biomarkerSignal: {
             matched: false,
@@ -390,6 +556,7 @@ function failResult(input: {
         },
       },
       ocr: emptyOcrStage(input.extractedText),
+      textNormalisation: emptyTextNormalisationStage(input.extractedText),
       providerDetection: {
         stage: "provider_detection",
         ...skipped,
@@ -404,12 +571,7 @@ function failResult(input: {
       biomarkerParsing: {
         stage: "biomarker_parsing",
         ...skipped,
-        diagnostics: {
-          markerCount: 0,
-          manualEntryCount: 0,
-          markerNames: [],
-          warnings: [],
-        },
+        diagnostics: emptyBiomarkerParsingDiagnostics(),
       },
       validation: {
         stage: "validation",
@@ -461,9 +623,13 @@ export async function safeRunBloodPdfPipeline(
           extractedTextLength: 0,
         },
         parserDecision: {
-          documentClass: "image_only",
-          reason: "pipeline crashed before classification completed",
+          classification: "unknown",
+          documentClass: "unknown",
+          confidence: 0,
+          reason: ["pipeline crashed before classification completed"],
           ocrRequired: false,
+          producer: null,
+          producerFamily: "Unknown",
           failedStage,
         },
         stages: [],

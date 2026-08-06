@@ -8,15 +8,21 @@ export type BloodPdfStageId =
   | "text_extraction"
   | "document_classification"
   | "ocr"
+  | "text_normalisation"
   | "provider_detection"
   | "biomarker_parsing"
   | "validation"
   | "fact_writer"
 
-export type DocumentClass =
-  | "digital_selectable"
-  | "image_only"
+/** Production PDF classification — multi-signal, explainable. */
+export type PdfClassification =
+  | "digital_text"
   | "mixed"
+  | "image_pdf"
+  | "unknown"
+
+/** @deprecated Use PdfClassification. Kept as alias during migration. */
+export type DocumentClass = PdfClassification
 
 export type StageStatus = "ok" | "failed" | "skipped"
 
@@ -80,15 +86,50 @@ export type TextExtractionDiagnostics = {
   pdfJsWarnings: string[]
 }
 
+/** Per-page geometry + image coverage for classification. */
+export type PageImageAnalysis = {
+  pageNum: number
+  textItemCount: number
+  characterCount: number
+  embeddedImages: number
+  pageWidth: number
+  pageHeight: number
+  estimatedImageCoveragePercent: number
+  hasMeaningfulText: boolean
+}
+
+export type PdfProducerFamily =
+  | "WeasyPrint"
+  | "jsPDF"
+  | "wkhtmltopdf"
+  | "Chrome"
+  | "Microsoft Print to PDF"
+  | "Adobe Acrobat"
+  | "Other"
+  | "Unknown"
+
 export type ClassificationDiagnostics = {
-  documentClass: DocumentClass
+  /** Primary classification label. */
+  classification: PdfClassification
+  /** Alias of classification for older log consumers. */
+  documentClass: PdfClassification
+  confidence: number
+  reason: string[]
   totalChars: number
   pageCount: number
   charsPerPage: number[]
   avgCharsPerPage: number
-  minCharsForDigital: number
-  reason: string
-  /** True only when documentClass === "image_only". */
+  textItemCount: number
+  pagesWithMeaningfulText: number
+  percentPagesWithMeaningfulText: number
+  embeddedImageCount: number
+  avgImageCoveragePercent: number
+  producer: string | null
+  producerFamily: PdfProducerFamily
+  creator: string | null
+  pdfVersion: string | null
+  pages: PageImageAnalysis[]
+  /** Never true for image_pdf on Vercel — OCR is not attempted. */
   ocrRequired: boolean
   biomarkerSignal: BiomarkerSignalDiagnostics
 }
@@ -108,11 +149,42 @@ export type ProviderDetectionDiagnostics = {
   evidence: string[]
 }
 
+export type TextNormalisationDiagnostics = {
+  inputChars: number
+  outputChars: number
+  unitsCollapsed: number
+  numbersCollapsed: number
+  first1000Chars: string
+  last1000Chars: string
+  rawArtifactPath: string | null
+  normalisedArtifactPath: string | null
+}
+
+export type BiomarkerRowAttemptDiagnostics = {
+  matched: boolean
+  reason?: string
+  regexAttempted: string
+  line: string
+  markerName?: string
+  tokensConsumed?: string[]
+  constructedRow?: {
+    biomarker: string
+    value: number | null
+    unit: string
+    referenceRange: string
+    flag: string
+  }
+}
+
 export type BiomarkerParsingDiagnostics = {
   markerCount: number
   manualEntryCount: number
   markerNames: string[]
   warnings: string[]
+  candidateRows: number
+  matchedRows: number
+  ignoredRows: number
+  rowAttempts: BiomarkerRowAttemptDiagnostics[]
 }
 
 export type OcrDiagnostics = {
@@ -136,9 +208,13 @@ export type PipelineStructuredLog = {
   firstPagePreview: string
   biomarkerSignal: BiomarkerSignalDiagnostics
   parserDecision: {
-    documentClass: DocumentClass
-    reason: string
+    classification: PdfClassification
+    documentClass: PdfClassification
+    confidence: number
+    reason: string[]
     ocrRequired: boolean
+    producer: string | null
+    producerFamily: PdfProducerFamily
     failedStage: BloodPdfStageId | null
   }
   stages: Array<{
@@ -162,6 +238,10 @@ export type BloodPdfPipelineResult = {
     textExtraction: StageResult<TextExtractionDiagnostics, { text: string }>
     classification: StageResult<ClassificationDiagnostics>
     ocr: StageResult<OcrDiagnostics, { text: string }>
+    textNormalisation: StageResult<
+      TextNormalisationDiagnostics,
+      { text: string }
+    >
     providerDetection: StageResult<ProviderDetectionDiagnostics>
     biomarkerParsing: StageResult<BiomarkerParsingDiagnostics>
     validation: StageResult<ValidationDiagnostics>

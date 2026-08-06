@@ -8,6 +8,7 @@
 
 export type BloodPdfErrorCode =
   | "pdf_text_failed"
+  | "image_pdf_unsupported"
   | "ocr_unavailable"
   | "ocr_failed"
   | "biomarkers_unparsed"
@@ -25,6 +26,8 @@ export class BloodPdfError extends Error {
 
 const CODE_MESSAGES: Record<BloodPdfErrorCode, string> = {
   pdf_text_failed: "PDF text extraction failed.",
+  image_pdf_unsupported:
+    "This PDF appears to be an image-based export and cannot currently be analysed automatically. Please upload the downloadable text-based report if available.",
   ocr_unavailable: "OCR worker failed to initialise.",
   ocr_failed: "OCR failed on this PDF.",
   biomarkers_unparsed: "Unable to parse biomarkers.",

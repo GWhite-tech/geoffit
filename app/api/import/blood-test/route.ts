@@ -24,6 +24,10 @@ type ParseRequestBody = {
  * Prefer POST /api/ingest/process { documentKind: "blood_lab_pdf", ... }.
  */
 export async function POST(request: Request) {
+  console.info("START_IMPORT_ROUTE", {
+    path: "/api/import/blood-test",
+    ts: new Date().toISOString(),
+  })
   try {
     const contentType = request.headers.get("content-type") ?? ""
     if (contentType.includes("multipart/form-data")) {

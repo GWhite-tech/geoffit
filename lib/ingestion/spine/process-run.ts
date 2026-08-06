@@ -1,11 +1,19 @@
 import "server-only"
 
+import {
+  BLOOD_LAB_PDF_PARSER_NAME,
+  BLOOD_LAB_PDF_PARSER_VERSION,
+} from "@/lib/importers/blood-tests/pipeline/diagnostics"
+
 import { getDocumentParser } from "../registry"
 import type {
   DocumentKind,
+  DocumentParser,
+  FactWriter,
   ParseResult,
   ProcessIngestOptions,
   ProcessIngestResult,
+  TimelineWriter,
 } from "../types"
 import { deferredClientFactWriter } from "../writers/facts"
 import { noopTimelineWriter } from "../writers/timeline"
@@ -28,6 +36,37 @@ function emptyParseFailure(error: string): ParseResult {
   }
 }
 
+function logIngestException(
+  error: unknown,
+  ingestRunId: string,
+  failedStage: string | null
+): void {
+  const err = error instanceof Error ? error : null
+  console.error(
+    JSON.stringify({
+      scope: "INGEST_EXCEPTION",
+      name: err?.name ?? typeof error,
+      message: err?.message ?? String(error),
+      stack: err?.stack ?? null,
+      failedStage,
+      ingestRunId,
+    })
+  )
+}
+
+function parserVersionForKind(documentKind: DocumentKind): string {
+  if (documentKind === "blood_lab_pdf") return BLOOD_LAB_PDF_PARSER_VERSION
+  return "unknown"
+}
+
+function parserNameForKind(
+  documentKind: DocumentKind,
+  parserId: string
+): string {
+  if (documentKind === "blood_lab_pdf") return BLOOD_LAB_PDF_PARSER_NAME
+  return parserId
+}
+
 /**
  * Generic processor: load user_files → download → parser → writers → ingest_runs.
  * Idempotent retries: increments attempt; parsers/writers use contentFingerprint.
@@ -39,6 +78,33 @@ export async function processIngestRun(
   const factWriter = options.factWriter ?? deferredClientFactWriter
   const timelineWriter = options.timelineWriter ?? noopTimelineWriter
 
+  console.info(
+    "INGEST_START",
+    JSON.stringify({
+      ingestRunId: options.ingestRunId,
+      documentKind: options.documentKind,
+      parserSelected: parser.id,
+      parserKind: parser.kind,
+      isBloodLabPdfParser: parser.id === "parser.blood_lab_pdf",
+      userFileId: options.fileId,
+    })
+  )
+
+  try {
+    return await processIngestRunBody(options, parser, factWriter, timelineWriter)
+  } catch (error) {
+    // Raw exception first — never map before this log.
+    logIngestException(error, options.ingestRunId, "processIngestRun")
+    throw error
+  }
+}
+
+async function processIngestRunBody(
+  options: ProcessIngestOptions,
+  parser: DocumentParser,
+  factWriter: FactWriter,
+  timelineWriter: TimelineWriter
+): Promise<ProcessIngestResult> {
   const primary = await loadOwnedFile(
     options.supabase,
     options.userId,
@@ -148,6 +214,7 @@ export async function processIngestRun(
       allBytes.push(await downloadStoredFile(options.supabase, file))
     }
   } catch (error) {
+    logIngestException(error, options.ingestRunId, "storage_download")
     const message =
       error instanceof Error ? error.message : "Storage download failed"
     const parse = emptyParseFailure(message)
@@ -170,6 +237,21 @@ export async function processIngestRun(
     }
   }
 
+  const parserName = parserNameForKind(options.documentKind, parser.id)
+  const parserVersion = parserVersionForKind(options.documentKind)
+
+  console.info(
+    "BEFORE_PARSER",
+    JSON.stringify({
+      ingestRunId: options.ingestRunId,
+      parserName,
+      parserVersion,
+      parserId: parser.id,
+      documentKind: options.documentKind,
+      isBloodLabPdfParser: parser.id === "parser.blood_lab_pdf",
+    })
+  )
+
   let parse: ParseResult
   try {
     parse = await parser.parse({
@@ -185,11 +267,34 @@ export async function processIngestRun(
       signal: options.signal,
     })
   } catch (error) {
-    console.error("[processIngestRun] parser threw", error)
+    // Raw exception first — do not map before this log.
+    logIngestException(error, options.ingestRunId, "parser")
     parse = emptyParseFailure(
       error instanceof Error ? error.message : "Parser threw unexpectedly."
     )
   }
+
+  const failedStage =
+    parse.diagnostics &&
+    typeof parse.diagnostics === "object" &&
+    typeof parse.diagnostics.failed_stage === "string"
+      ? parse.diagnostics.failed_stage
+      : parse.diagnostics &&
+          typeof parse.diagnostics === "object" &&
+          typeof parse.diagnostics.failedStage === "string"
+        ? parse.diagnostics.failedStage
+        : null
+
+  console.info(
+    "AFTER_PARSER",
+    JSON.stringify({
+      ingestRunId: options.ingestRunId,
+      success: parse.success,
+      failedStage,
+      diagnosticsPresent: parse.diagnostics != null,
+      parserId: parser.id,
+    })
+  )
 
   const contentFingerprint =
     parse.contentFingerprint ??
@@ -200,20 +305,25 @@ export async function processIngestRun(
   let timeline = null
 
   if (parse.success) {
-    facts = await factWriter.write({
-      userId: options.userId,
-      ingestRunId: options.ingestRunId,
-      documentKind: options.documentKind,
-      parseResult: parse,
-      contentFingerprint,
-    })
-    timeline = await timelineWriter.write({
-      userId: options.userId,
-      ingestRunId: options.ingestRunId,
-      documentKind: options.documentKind,
-      parseResult: parse,
-      factWrite: facts,
-    })
+    try {
+      facts = await factWriter.write({
+        userId: options.userId,
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        parseResult: parse,
+        contentFingerprint,
+      })
+      timeline = await timelineWriter.write({
+        userId: options.userId,
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        parseResult: parse,
+        factWrite: facts,
+      })
+    } catch (error) {
+      logIngestException(error, options.ingestRunId, "writers")
+      throw error
+    }
   }
 
   const status = parse.success ? "succeeded" : "failed"

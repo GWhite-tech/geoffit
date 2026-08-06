@@ -106,6 +106,11 @@ export async function runPdfLoaderStage(
   stage: StageResult<PdfLoaderDiagnostics>
   loaded: LoadedPdf | null
 }> {
+  console.info("START_PDF_LOADER", {
+    fileName,
+    byteLength: data.byteLength,
+    ts: new Date().toISOString(),
+  })
   const started = performance.now()
 
   // Identity of bytes first — before getDocument / text extraction.

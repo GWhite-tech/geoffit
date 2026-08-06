@@ -33,6 +33,10 @@ type Body = {
  * Files must already be in private Storage with user_files + ingest_runs rows.
  */
 export async function POST(request: Request) {
+  console.info("START_INGEST_PROCESS", {
+    path: "/api/ingest/process",
+    ts: new Date().toISOString(),
+  })
   try {
     const contentType = request.headers.get("content-type") ?? ""
     if (contentType.includes("multipart/form-data")) {

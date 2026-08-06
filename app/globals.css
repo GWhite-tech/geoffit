@@ -152,10 +152,19 @@
 }
 
 @layer utilities {
+  .app-canvas {
+    background-color: var(--background);
+    background-image: radial-gradient(
+      ellipse 90% 40% at 50% -12%,
+      rgb(255 255 255 / 0.035),
+      transparent 70%
+    );
+  }
+
   .dashboard-grid-bg {
     background-image: radial-gradient(
       ellipse 80% 45% at 50% -8%,
-      color-mix(in srgb, var(--primary) 9%, transparent),
+      rgb(255 255 255 / 0.03),
       transparent 70%
     );
   }
@@ -186,7 +195,7 @@
     background:
       radial-gradient(
         ellipse 70% 60% at 50% 0%,
-        color-mix(in srgb, var(--primary) 10%, transparent),
+        rgb(255 255 255 / 0.04),
         transparent 65%
       ),
       color-mix(in srgb, var(--card) 45%, transparent);

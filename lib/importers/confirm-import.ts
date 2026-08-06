@@ -11,6 +11,11 @@ import {
   getWorkoutStore,
   type HevyWorkoutEntry,
 } from "@/lib/health/workout"
+import {
+  ingestAppleHealthPersistBatches,
+  readAppleHealthPersistMeta,
+} from "@/lib/importers/apple-health/ingest-persist-batches"
+import { createClientOrNull } from "@/lib/supabase/client"
 import type { ParsedImportData } from "./Importer"
 import type { ImportResult } from "./ImportResult"
 import { getImportPersistence } from "./persistence"
@@ -47,12 +52,6 @@ export async function confirmParsedImport(
     metadataKeys: Object.keys(parsed.metadata ?? {}),
   })
 
-  const domainRecords = extractDomainRecords(parsed)
-  console.info("[confirmParsedImport] domain HealthRecord[] ready", {
-    count: domainRecords.length,
-    sampleTypes: domainRecords.slice(0, 8).map((r) => r.type),
-  })
-
   const persistence = getImportPersistence()
   const batch = {
     id: crypto.randomUUID(),
@@ -67,13 +66,39 @@ export async function confirmParsedImport(
   console.info("[confirmParsedImport] mock batch saved", {
     batchId,
     auditRows: batch.records.length,
-    domainRecordCount: domainRecords.length,
+    metadataDomainRecords: metaDomainCount,
   })
 
-  if (domainRecords.length > 0) {
+  let domainRecords = extractDomainRecords(parsed)
+  let streamedIngested = 0
+
+  if (importerId === "apple-health") {
+    const persist = readAppleHealthPersistMeta(
+      parsed.metadata as Record<string, unknown>
+    )
+    if (persist && persist.batchCount > 0) {
+      const supabase = createClientOrNull()
+      if (!supabase) {
+        throw new Error(
+          "Geoffit Cloud is required to finish Apple Health import into your health store."
+        )
+      }
+      const result = await ingestAppleHealthPersistBatches({
+        supabase,
+        persist,
+      })
+      streamedIngested = result.ingested
+      domainRecords = getHealthStore().getAll()
+    } else if (domainRecords.length > 0) {
+      await getHealthStore().ingest(domainRecords)
+    } else {
+      console.warn(
+        "[confirmParsedImport] apple-health had no persist batches and no domainRecords"
+      )
+    }
+  } else if (domainRecords.length > 0) {
     await getHealthStore().ingest(domainRecords)
   } else if (importerId === "hevy") {
-    // Hevy structure lives in WorkoutStore — never HealthStore quantity rows.
     const hevyWorkouts = extractHevyWorkouts(parsed)
     if (hevyWorkouts.length > 0) {
       getWorkoutStore().ingest(hevyWorkouts)
@@ -108,9 +133,9 @@ export async function confirmParsedImport(
   console.info("[confirmParsedImport] HealthStore now has", {
     total: getHealthStore().getRecordCount(),
     hasData: getHealthStore().getSnapshot().hasData,
+    streamedIngested,
   })
 
-  // Rebuild NutritionStore daily totals from dietary HealthStore samples only.
   getNutritionStore().syncFromHealthRecords(getHealthStore().getAll())
   console.info("[confirmParsedImport] NutritionStore days", {
     days: getNutritionStore().getDays().length,
@@ -138,13 +163,15 @@ export async function confirmParsedImport(
     importerId === "hevy" ? extractHevyWorkouts(parsed) : []
 
   const recordCount =
-    hevyWorkouts.length > 0
-      ? hevyWorkouts.length
-      : domainRecords.length > 0
-        ? domainRecords.length
-        : bloodMarkerCount > 0
-          ? bloodMarkerCount
-          : parsed.records.length
+    streamedIngested > 0
+      ? streamedIngested
+      : hevyWorkouts.length > 0
+        ? hevyWorkouts.length
+        : domainRecords.length > 0
+          ? domainRecords.length
+          : bloodMarkerCount > 0
+            ? bloodMarkerCount
+            : parsed.records.length
 
   return {
     id: crypto.randomUUID(),

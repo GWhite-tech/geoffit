@@ -2,21 +2,89 @@
 
 import Link from "next/link"
 import { format } from "date-fns"
-import { useMemo, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
+import {
+  ChevronRight,
+  Cloud,
+  Download,
+  LogOut,
+  Settings,
+  Share2,
+  UserRound,
+} from "lucide-react"
 
-import { AdaptiveGrid } from "@/components/layout/adaptive-grid"
-import { ResponsiveCard } from "@/components/layout/responsive-card"
-import { ResponsivePage } from "@/components/layout/responsive-page"
+import { MobilePage, SectionHeader } from "@/components/mobile"
 import { usePreferences } from "@/components/preferences/preferences-provider"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useProfile, useUser } from "@/hooks/auth"
 import { logoutAction } from "@/lib/auth/actions"
 import { summarizeConnectedSources } from "@/lib/connected-sources"
 import { createClientOrNull } from "@/lib/supabase/client"
 import { loadCloudStatus } from "@/lib/supabase/status"
-import { useEffect, useState } from "react"
+import { cn } from "@/lib/utils"
+
+function Row({
+  href,
+  icon: Icon,
+  label,
+  value,
+  onClick,
+  danger,
+}: {
+  href?: string
+  icon: typeof Settings
+  label: string
+  value?: string
+  onClick?: () => void
+  danger?: boolean
+}) {
+  const className = cn(
+    "flex min-h-14 w-full items-center gap-3 border-b border-white/[0.05] px-1 py-3 text-left transition-colors active:bg-white/[0.03]",
+    danger && "text-danger"
+  )
+
+  const body = (
+    <>
+      <Icon
+        className={cn(
+          "size-5 shrink-0",
+          danger ? "text-danger" : "text-muted-foreground"
+        )}
+      />
+      <span
+        className={cn(
+          "min-w-0 flex-1 text-[16px] font-medium",
+          danger ? "text-danger" : "text-foreground"
+        )}
+      >
+        {label}
+      </span>
+      {value ? (
+        <span className="max-w-[40%] truncate text-[13px] text-muted-foreground">
+          {value}
+        </span>
+      ) : null}
+      {href || onClick ? (
+        <ChevronRight className="size-4 text-muted-foreground/45" />
+      ) : null}
+    </>
+  )
+
+  if (href) {
+    return (
+      <Link href={href} className={className}>
+        {body}
+      </Link>
+    )
+  }
+
+  return (
+    <button type="button" onClick={onClick} className={className}>
+      {body}
+    </button>
+  )
+}
 
 export function AccountDashboard() {
   const { user, loading: userLoading } = useUser()
@@ -31,7 +99,7 @@ export function AccountDashboard() {
       if (status.connectionStatus === "not_configured") {
         setCloudLabel("Not configured")
       } else if (status.authStatus === "Signed in") {
-        setCloudLabel("Connected · signed in")
+        setCloudLabel("Connected")
       } else {
         setCloudLabel(status.connectionStatus)
       }
@@ -40,11 +108,11 @@ export function AccountDashboard() {
 
   if (userLoading || profileLoading) {
     return (
-      <ResponsivePage narrow className="space-y-4">
-        <Skeleton className="h-10 w-48" />
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-40 w-full" />
-      </ResponsivePage>
+      <MobilePage className="space-y-4">
+        <Skeleton className="h-10 w-40" />
+        <Skeleton className="h-20 w-full rounded-2xl" />
+        <Skeleton className="h-40 w-full rounded-2xl" />
+      </MobilePage>
     )
   }
 
@@ -56,113 +124,78 @@ export function AccountDashboard() {
     ? format(new Date(profile.created_at), "MMMM yyyy")
     : "—"
 
-  const securityScore =
-    (user ? 40 : 0) +
-    (preferences?.show_welcome_screen === false ? 20 : 10) +
-    30
-
   return (
-    <ResponsivePage className="space-y-10">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <Avatar className="size-16 after:border-border/40">
-            {profile?.avatar_url ? (
-              <AvatarImage src={profile.avatar_url} alt={display} />
-            ) : null}
-            <AvatarFallback className="bg-card text-[18px]">
-              {(display || "G").slice(0, 2).toUpperCase()}
-            </AvatarFallback>
-          </Avatar>
-          <div>
-            <p className="text-[13px] tracking-[0.14em] text-muted-foreground uppercase">
-              Account
-            </p>
-            <h1 className="mt-1 text-[32px] font-semibold tracking-tight">
-              Hello, {greetingName}
-            </h1>
-            <p className="mt-1 text-[14px] text-muted-foreground">
-              Member since {memberSince}
-            </p>
-          </div>
+    <MobilePage title="Account" className="space-y-10">
+      <section className="flex items-center gap-4 px-1">
+        <Avatar className="size-16 after:border-white/10">
+          {profile?.avatar_url ? (
+            <AvatarImage src={profile.avatar_url} alt={display} />
+          ) : null}
+          <AvatarFallback className="bg-white/[0.06] text-[18px]">
+            {(display || "G").slice(0, 2).toUpperCase()}
+          </AvatarFallback>
+        </Avatar>
+        <div className="min-w-0">
+          <p className="truncate text-[22px] font-semibold tracking-tight">
+            {display || greetingName}
+          </p>
+          <p className="mt-1 text-[14px] text-muted-foreground">
+            Member since {memberSince}
+          </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button render={<Link href="/settings" />} variant="outline" className="h-9">
-            Open Settings
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="h-9"
-            disabled={pending}
+      </section>
+
+      <section>
+        <SectionHeader title="Profile" className="mb-2" />
+        <div className="rounded-2xl bg-white/[0.03] px-3 ring-1 ring-white/[0.05]">
+          <Row
+            href="/settings?category=profile"
+            icon={UserRound}
+            label="Profile"
+            value={preferences?.unit_system === "imperial" ? "Imperial" : "Metric"}
+          />
+          <Row
+            href="/settings"
+            icon={Settings}
+            label="Settings"
+          />
+        </div>
+      </section>
+
+      <section>
+        <SectionHeader title="Connected services" className="mb-2" />
+        <div className="rounded-2xl bg-white/[0.03] px-3 ring-1 ring-white/[0.05]">
+          <Row
+            href="/settings?category=health_sources"
+            icon={Cloud}
+            label="Apple Health"
+            value={cloudLabel}
+          />
+          <Row
+            href="/import"
+            icon={Download}
+            label="Blood imports"
+            value={`${sources.connected} sources`}
+          />
+          <Row
+            href="/settings?category=cloud"
+            icon={Share2}
+            label="Invite coach"
+            value="Soon"
+          />
+        </div>
+      </section>
+
+      <section>
+        <div className="rounded-2xl bg-white/[0.03] px-3 ring-1 ring-white/[0.05]">
+          <Row
+            icon={LogOut}
+            label={pending ? "Signing out…" : "Sign out"}
+            danger
             onClick={() => startTransition(async () => logoutAction())}
-          >
-            Sign out
-          </Button>
+          />
         </div>
-      </header>
-
-      <AdaptiveGrid cols={3}>
-        <StatCard title="Subscription" value="Founder preview" hint="Billing later" />
-        <StatCard title="Cloud status" value={cloudLabel} hint="Supabase foundation" />
-        <StatCard
-          title="Security score"
-          value={`${Math.min(securityScore, 100)}`}
-          hint="Password + privacy posture"
-        />
-        <StatCard
-          title="Health sources"
-          value={`${sources.connected} connected`}
-          hint={`${sources.comingSoon} coming soon`}
-        />
-        <StatCard title="Storage usage" value="Local only" hint="Cloud metering later" />
-        <StatCard
-          title="Recent devices"
-          value="This browser"
-          hint="Device inventory coming soon"
-        />
-      </AdaptiveGrid>
-
-      <ResponsiveCard>
-        <p className="text-[13px] font-medium tracking-[0.14em] text-muted-foreground/70 uppercase">
-          Quick actions
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button render={<Link href="/settings?category=privacy" />} variant="outline" className="h-9">
-            Change password
-          </Button>
-          <Button render={<Link href="/settings?category=health_sources" />} variant="outline" className="h-9">
-            Manage sources
-          </Button>
-          <Button render={<Link href="/settings?category=cloud" />} variant="outline" className="h-9">
-            Cloud & migration
-          </Button>
-          <Button render={<Link href="/import" />} variant="outline" className="h-9">
-            Import data
-          </Button>
-        </div>
-      </ResponsiveCard>
-    </ResponsivePage>
-  )
-}
-
-function StatCard({
-  title,
-  value,
-  hint,
-}: {
-  title: string
-  value: string
-  hint: string
-}) {
-  return (
-    <ResponsiveCard>
-      <p className="text-[12px] tracking-[0.12em] text-muted-foreground uppercase">
-        {title}
-      </p>
-      <p className="mt-3 text-[22px] font-semibold tracking-tight text-foreground">
-        {value}
-      </p>
-      <p className="mt-2 text-[13px] text-muted-foreground">{hint}</p>
-    </ResponsiveCard>
+      </section>
+    </MobilePage>
   )
 }

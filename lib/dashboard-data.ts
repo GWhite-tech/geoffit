@@ -1,7 +1,6 @@
 import {
   Bot,
   ClipboardList,
-  Clock,
   Dumbbell,
   Droplets,
   FileText,
@@ -10,9 +9,7 @@ import {
   Moon,
   NotebookPen,
   Scale,
-  ScanLine,
   Settings,
-  Sparkles,
   UserRound,
   TrendingUp,
   Utensils,
@@ -117,50 +114,34 @@ export type NavSection = {
 
 export const navSections: NavSection[] = [
   {
-    label: "Overview",
+    label: "Primary",
     items: [
       { label: "Mission Control", href: "/mission-control", icon: LayoutDashboard },
-      { label: "Weekly Review", href: "/weekly-review", icon: NotebookPen },
+      { label: "Progress", href: "/progress", icon: TrendingUp },
+      { label: "Blood", href: "/blood", icon: Droplets },
+      { label: "Training", href: "/training", icon: Dumbbell },
+      { label: "Account", href: "/account", icon: UserRound },
     ],
   },
   {
-    label: "Fitness",
+    label: "More",
     items: [
-      { label: "Training", href: "/training", icon: Dumbbell },
+      { label: "Weekly Review", href: "/weekly-review", icon: NotebookPen },
       { label: "Nutrition", href: "/nutrition", icon: Utensils },
       { label: "Treatments", href: "/treatment", icon: ClipboardList },
-    ],
-  },
-  {
-    label: "Health",
-    items: [
       { label: "Sleep", href: "/sleep", icon: Moon },
-      { label: "Blood", href: "/blood", icon: Droplets },
-      { label: "Progress", href: "/progress", icon: TrendingUp },
-    ],
-  },
-  {
-    label: "AI",
-    items: [
       { label: "AI Coach", href: "/coach", icon: Bot },
-      { label: "Timeline", href: "#", icon: Clock },
       { label: "Data Sources", href: "/import", icon: FileText },
-    ],
-  },
-  {
-    label: "Settings",
-    items: [
       { label: "Settings", href: "/settings", icon: Settings },
-      { label: "Account", href: "/account", icon: UserRound },
     ],
   },
 ]
 
 /** @deprecated Use navSections */
-export const navPrimary = navSections[0].items
+export const navPrimary = navSections[0]?.items ?? []
 /** @deprecated Use navSections */
-export const navHealth = navSections[2].items
+export const navHealth = navSections[0]?.items ?? []
 /** @deprecated Use navSections */
-export const navSecondary = navSections[3].items
+export const navSecondary = navSections[1]?.items ?? []
 /** @deprecated Use navSections */
-export const navFooter = navSections[4].items
+export const navFooter = navSections[1]?.items ?? []

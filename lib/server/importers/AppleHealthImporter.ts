@@ -1,5 +1,7 @@
 import "server-only"
 
+import type { HealthRecord } from "@/lib/domain/health"
+
 import { AppleHealthImporter as CoreAppleHealthImporter } from "@/lib/importers/AppleHealthImporter"
 import {
   createDefaultImportProfile,
@@ -13,14 +15,20 @@ import {
 } from "./types"
 
 /**
- * Server Apple Health importer — reuses existing ZIP/XML parsing.
+ * Server Apple Health importer — streaming ZIP/XML parse.
  */
 export class AppleHealthImporter {
   readonly id = "apple-health" as const
 
   async parseUpload(
     file: File,
-    options: { profile?: ImportProfileToggles } = {}
+    options: {
+      profile?: ImportProfileToggles
+      onBatch?: (batch: HealthRecord[]) => void | Promise<void>
+      deadlineAt?: number
+      skipMappedRecords?: number
+      batchSize?: number
+    } = {}
   ): Promise<ImportApiResponse> {
     try {
       const core = new CoreAppleHealthImporter()
@@ -30,8 +38,19 @@ export class AppleHealthImporter {
       }
 
       const profile = options.profile ?? createDefaultImportProfile()
-      const parsed = await core.parse(file, { profile })
+      let batchedRecords = 0
+      const parsed = await core.parse(file, {
+        profile,
+        deadlineAt: options.deadlineAt,
+        skipMappedRecords: options.skipMappedRecords,
+        batchSize: options.batchSize,
+        onBatch: async (batch) => {
+          batchedRecords += batch.length
+          await options.onBatch?.(batch)
+        },
+      })
       const validation = core.validate(parsed)
+      const incomplete = parsed.metadata.incomplete === true
 
       if (!validation.valid) {
         return importApiFailure({
@@ -56,12 +75,12 @@ export class AppleHealthImporter {
 
       console.info("[AppleHealthImporter:server] parse complete", {
         importRows: parsed.records.length,
-        domainRecords: domainRecords.length,
+        domainRecordsSample: domainRecords.length,
+        batchedRecords,
+        incomplete,
+        recordsMapped: parsed.metadata.recordsMapped ?? null,
       })
 
-      // Confirm only needs HealthRecord[] once. Shipping both import rows
-      // (each with nested payload.domain) and metadata.domainRecords doubles
-      // the JSON and can blow past browser memory / response limits.
       const leanPayload = {
         fileName: parsed.fileName,
         records: [],
@@ -81,6 +100,10 @@ export class AppleHealthImporter {
           profile: parsed.metadata.profile,
           mappingFunnel: parsed.metadata.mappingFunnel,
           importRecordCount: parsed.records.length,
+          streamingMappedCount: batchedRecords,
+          incomplete,
+          recordsMapped: parsed.metadata.recordsMapped,
+          batchesFlushed: parsed.metadata.batchesFlushed,
         },
       }
 
@@ -93,7 +116,12 @@ export class AppleHealthImporter {
             : {
                 format: parsed.metadata.format,
                 entryPath: parsed.metadata.entryPath,
-                recordCount: domainRecords.length,
+                recordCount:
+                  typeof parsed.metadata.recordsMapped === "number"
+                    ? parsed.metadata.recordsMapped
+                    : batchedRecords,
+                streaming: true,
+                incomplete,
               },
         payload: leanPayload,
       })

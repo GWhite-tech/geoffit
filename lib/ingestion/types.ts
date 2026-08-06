@@ -52,6 +52,8 @@ export type ParseContext = {
   ingestRunId: string
   attempt: number
   signal?: AbortSignal
+  /** Prior ingest_runs.stats — used to resume time-budgeted parsers. */
+  priorStats?: Record<string, unknown> | null
 }
 
 export type ParseResult = {

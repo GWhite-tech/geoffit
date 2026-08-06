@@ -20,7 +20,7 @@ export function TreatmentAlertsSection() {
       <div>
         <SectionLabel>Treatments</SectionLabel>
         <p className="mt-2 max-w-lg text-[15px] leading-relaxed text-muted-foreground">
-          Today&apos;s adherence and supply signals from your treatment OS.
+          Today’s doses and supply signals.
         </p>
       </div>
 

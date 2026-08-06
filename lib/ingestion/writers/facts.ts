@@ -19,7 +19,16 @@ export const deferredClientFactWriter: FactWriter = {
       return { written: 0, skipped: 0, errors: [] }
     }
     // Confirm step applies to BloodStore / HealthStore — count as deferred.
-    const n = input.parseResult.payload.records?.length ?? 0
+    const meta = input.parseResult.payload.metadata as
+      | Record<string, unknown>
+      | undefined
+    const persist = meta?.persist as { recordsMapped?: number } | undefined
+    const n =
+      typeof persist?.recordsMapped === "number"
+        ? persist.recordsMapped
+        : typeof meta?.streamingMappedCount === "number"
+          ? (meta.streamingMappedCount as number)
+          : (input.parseResult.payload.records?.length ?? 0)
     return { written: 0, skipped: n, errors: [] }
   },
 }

@@ -12,9 +12,6 @@ import {
   analyzeHealthRecords,
   formatAppleHealthDiagnostics,
   formatTypeCounts,
-  mapElementsToDomainWithDiagnostics,
-  openAppleHealthXmlStream,
-  parseAppleHealthXmlStream,
 } from "./apple-health"
 import {
   logBodyCompositionDiagnostics,
@@ -32,12 +29,13 @@ import {
   estimateRemainingSeconds,
   yieldToMain,
 } from "./apple-health/progress"
-import { metricTypeForHkType, sumMetrics } from "./apple-health/metric-counts"
+import { sumMetrics } from "./apple-health/metric-counts"
 import {
   DEFAULT_IMPORT_PROFILE,
   type ImportProfileToggles,
   type ImportReductionEstimate,
 } from "./apple-health/import-profile"
+import { runStreamingAppleHealthPipeline } from "./apple-health/streaming-pipeline"
 
 import type { MappingPipelineDiagnostics } from "./apple-health/mapping-diagnostics"
 
@@ -91,7 +89,12 @@ export class AppleHealthImporter extends BaseImporter {
 
   async parse(
     file: File,
-    options: AppleHealthParseOptions = {}
+    options: AppleHealthParseOptions & {
+      onBatch?: (batch: HealthRecord[]) => void | Promise<void>
+      deadlineAt?: number
+      skipMappedRecords?: number
+      batchSize?: number
+    } = {}
   ): Promise<ParsedImportData> {
     const gate = this.validateFile(file)
     if (!gate.ok) {
@@ -109,31 +112,22 @@ export class AppleHealthImporter extends BaseImporter {
     const throttler = createProgressThrottler(options.onProgress)
     const profile = options.profile ?? DEFAULT_IMPORT_PROFILE
 
-    const { stream, format, entryPath, zipEntries, xmlByteLength } =
-      await openAppleHealthXmlStream(file, options)
-
-    const parseResult = await parseAppleHealthXmlStream(stream, {
+    // Streaming ZIP → SAX → map → batch flush (no full archive / XML materialisation).
+    const streamed = await runStreamingAppleHealthPipeline(file, {
       ...options,
       profile,
-      xmlByteLength,
-      parseStartedAt: startedAt,
-      progressRange: { start: 22, end: 88 },
+      onBatch: options.onBatch,
     })
 
-    const liveMetrics = cloneMetrics(EMPTY_METRIC_COUNTS)
-    for (const element of parseResult.elements) {
-      if (element.kind === "workout") {
-        liveMetrics.workout += 1
-      } else {
-        const metric = metricTypeForHkType(element.attributes.type)
-        if (metric) liveMetrics[metric] += 1
-      }
+    const mappedMetrics = cloneMetrics(EMPTY_METRIC_COUNTS)
+    for (const record of streamed.domainRecords) {
+      mappedMetrics[record.type] += 1
     }
 
     const parseDiagnostics = {
-      appleHealthDetected: parseResult.diagnostics.appleHealthDetected,
-      classification: parseResult.diagnostics.classification,
-      totalXmlElements: parseResult.diagnostics.totalXmlElements,
+      appleHealthDetected: streamed.diagnostics.appleHealthDetected,
+      classification: streamed.diagnostics.classification,
+      totalXmlElements: streamed.diagnostics.totalXmlElements,
     }
 
     const reductionFromDisabled =
@@ -143,13 +137,13 @@ export class AppleHealthImporter extends BaseImporter {
               (sum, entry) => sum + entry.count,
               0
             ),
-            enabledParsed: parseResult.elements.length,
+            enabledParsed: streamed.diagnostics.recordsMapped,
             estimatedReductionPercent: (() => {
               const skipped = parseDiagnostics.classification.disabled.reduce(
                 (sum, entry) => sum + entry.count,
                 0
               )
-              const total = skipped + parseResult.elements.length
+              const total = skipped + streamed.diagnostics.recordsMapped
               return total > 0
                 ? Math.min(99, Math.round((skipped / total) * 100))
                 : null
@@ -167,57 +161,9 @@ export class AppleHealthImporter extends BaseImporter {
     throttler.emit(
       {
         stage: "mapping_records",
-        progress: 90,
-        processedElements: parseResult.diagnostics.totalXmlElements,
-        supportedRecordsFound: parseResult.elements.length,
-        estimatedRemainingTime: estimateRemainingSeconds(startedAt, 0.9),
-        metrics: liveMetrics,
-        message: STAGE_MESSAGES.mapping_records,
-        ...progressExtras(
-          liveMetrics,
-          parseDiagnostics,
-          profile,
-          reductionFromDisabled
-        ),
-      },
-      true
-    )
-    await yieldToMain()
-
-    const {
-      records: domainRecords,
-      importRecords,
-      skipped: mappingSkipped,
-      mappingDiagnostics,
-    } = mapElementsToDomainWithDiagnostics(parseResult.elements)
-
-    if (parseResult.elements[0]) {
-      console.info(
-        "[AppleHealthMapper] Sample retained element:",
-        parseResult.elements[0]
-      )
-    } else {
-      console.warn(
-        "[AppleHealthMapper] No retained elements to map — parser kept 0 enabled records."
-      )
-    }
-
-    // Surface funnel failures immediately in the console.
-    for (const error of mappingDiagnostics.errors) {
-      console.warn(`[AppleHealthMapper] ${error}`)
-    }
-
-    const mappedMetrics = cloneMetrics(EMPTY_METRIC_COUNTS)
-    for (const record of domainRecords) {
-      mappedMetrics[record.type] += 1
-    }
-
-    throttler.emit(
-      {
-        stage: "mapping_records",
         progress: 95,
-        processedElements: parseResult.diagnostics.totalXmlElements,
-        supportedRecordsFound: sumMetrics(mappedMetrics),
+        processedElements: streamed.diagnostics.totalXmlElements,
+        supportedRecordsFound: streamed.diagnostics.recordsMapped,
         estimatedRemainingTime: estimateRemainingSeconds(startedAt, 0.95),
         metrics: mappedMetrics,
         message: STAGE_MESSAGES.mapping_records,
@@ -236,8 +182,8 @@ export class AppleHealthImporter extends BaseImporter {
       {
         stage: "generating_preview",
         progress: 98,
-        processedElements: parseResult.diagnostics.totalXmlElements,
-        supportedRecordsFound: domainRecords.length,
+        processedElements: streamed.diagnostics.totalXmlElements,
+        supportedRecordsFound: streamed.diagnostics.recordsMapped,
         estimatedRemainingTime: estimateRemainingSeconds(startedAt, 0.98),
         metrics: mappedMetrics,
         message: STAGE_MESSAGES.generating_preview,
@@ -252,68 +198,74 @@ export class AppleHealthImporter extends BaseImporter {
     )
     await yieldToMain()
 
+    // Preview sample only — streaming path does not retain the full record set.
+    const domainRecords = streamed.domainRecords
     const analysis = analyzeHealthRecords(domainRecords)
 
     const bodyCompositionMeasurements =
       mergeBodyCompositionSessions(domainRecords)
-    console.info(
-      `[AppleHealth] Body composition sessions merged: ${bodyCompositionMeasurements.length.toLocaleString()} (from nearby same-source readings within 5 minutes)`
-    )
 
     const bodyCompositionTypeDiagnostics = logBodyCompositionDiagnostics(
-      parseResult.diagnostics.topRecordTypes
+      streamed.diagnostics.topRecordTypes
     )
 
     const diagnostics: AppleHealthDiagnostics = {
       fileName: file.name,
-      format,
-      zipEntries,
-      selectedXmlPath: entryPath,
-      xmlByteLength,
-      totalXmlElements: parseResult.diagnostics.totalXmlElements,
-      recordElementCount: parseResult.diagnostics.recordElementCount,
-      workoutElementCount: parseResult.diagnostics.workoutElementCount,
-      supportedRecordCount: domainRecords.length,
-      topRecordTypes: parseResult.diagnostics.topRecordTypes,
-      parseWarnings: parseResult.diagnostics.parseWarnings,
-      malformedElements: parseResult.diagnostics.malformedElements,
-      appleHealthDetected: parseResult.diagnostics.appleHealthDetected,
-      classification: parseResult.diagnostics.classification,
-      mappingFunnel: mappingDiagnostics,
+      format: streamed.format,
+      zipEntries: [],
+      selectedXmlPath: streamed.entryPath,
+      xmlByteLength: null,
+      totalXmlElements: streamed.diagnostics.totalXmlElements,
+      recordElementCount: streamed.diagnostics.recordElementCount,
+      workoutElementCount: streamed.diagnostics.workoutElementCount,
+      supportedRecordCount: streamed.diagnostics.recordsMapped,
+      topRecordTypes: streamed.diagnostics.topRecordTypes,
+      parseWarnings: streamed.diagnostics.parseWarnings,
+      malformedElements: streamed.diagnostics.malformedElements,
+      appleHealthDetected: streamed.diagnostics.appleHealthDetected,
+      classification: streamed.diagnostics.classification,
+      mappingFunnel: streamed.mappingFunnel,
       bodyCompositionTypeDiagnostics,
       bodyCompositionSessionCount: bodyCompositionMeasurements.length,
     }
 
-    const diagnosticReport = formatAppleHealthDiagnostics(diagnostics)
+    const diagnosticReport = [
+      formatAppleHealthDiagnostics(diagnostics),
+      "",
+      `Streaming pipeline: batches=${streamed.diagnostics.batchesFlushed}, mapped=${streamed.diagnostics.recordsMapped.toLocaleString()} (full export.xml never materialised)${streamed.incomplete ? " — incomplete, resume required" : ""}.`,
+    ].join("\n")
     console.info(diagnosticReport)
 
-    const records = importRecords
-
     const metadata: AppleHealthMetadata = {
-      format,
-      entryPath,
+      format: streamed.format,
+      entryPath: streamed.entryPath,
       domainRecords,
       bodyCompositionMeasurements,
-      parseWarnings: parseResult.warnings,
-      skippedElements: parseResult.skippedElements,
-      malformedElements: parseResult.malformedElements,
-      mappingSkipped,
+      parseWarnings: streamed.parseWarnings,
+      skippedElements: streamed.skippedElements,
+      malformedElements: streamed.malformedElements,
+      mappingSkipped: streamed.mappingSkipped,
       analysis,
       diagnostics,
       diagnosticReport,
       profile,
-      mappingFunnel: mappingDiagnostics,
+      mappingFunnel: streamed.mappingFunnel,
     }
 
     throttler.emit(
       {
         stage: "generating_preview",
-        progress: 100,
-        processedElements: parseResult.diagnostics.totalXmlElements,
-        supportedRecordsFound: domainRecords.length,
-        estimatedRemainingTime: 0,
-        metrics: mappedMetrics,
-        message: STAGE_MESSAGES.generating_preview,
+        progress: streamed.incomplete ? 92 : 100,
+        processedElements: streamed.diagnostics.totalXmlElements,
+        supportedRecordsFound: streamed.diagnostics.recordsMapped,
+        estimatedRemainingTime: streamed.incomplete ? null : 0,
+        metrics:
+          sumMetrics(mappedMetrics) > 0
+            ? mappedMetrics
+            : cloneMetrics(EMPTY_METRIC_COUNTS),
+        message: streamed.incomplete
+          ? "Parse paused under server time limit…"
+          : STAGE_MESSAGES.generating_preview,
         ...progressExtras(
           mappedMetrics,
           parseDiagnostics,
@@ -327,8 +279,14 @@ export class AppleHealthImporter extends BaseImporter {
 
     return {
       fileName: file.name,
-      records,
-      metadata: metadata as unknown as Record<string, unknown>,
+      // Import rows are preview-sized; full set was flushed via onBatch during stream.
+      records: streamed.importRecords,
+      metadata: {
+        ...(metadata as unknown as Record<string, unknown>),
+        incomplete: streamed.incomplete,
+        recordsMapped: streamed.diagnostics.recordsMapped,
+        batchesFlushed: streamed.diagnostics.batchesFlushed,
+      },
     }
   }
 
@@ -357,7 +315,8 @@ export class AppleHealthImporter extends BaseImporter {
       return { valid: false, errors, warnings }
     }
 
-    if (data.records.length === 0) {
+    const mappedCount = metadata.diagnostics.supportedRecordCount
+    if (mappedCount === 0) {
       errors.push(
         "Apple Health export confirmed, but no currently supported records were extracted."
       )
@@ -393,7 +352,7 @@ export class AppleHealthImporter extends BaseImporter {
       )
     }
 
-    if (data.records.length > 0 && !metadata.analysis.dateRange) {
+    if (mappedCount > 0 && !metadata.analysis.dateRange) {
       warnings.push("Could not determine a date range from extracted records.")
     }
 
@@ -432,11 +391,14 @@ export class AppleHealthImporter extends BaseImporter {
       )
     }
 
+    const recordCount =
+      metadata.diagnostics.supportedRecordCount || data.records.length
+
     return {
       importerId: this.id,
       fileName: data.fileName,
-      summary: `${data.records.length.toLocaleString()} records · ${dateRangeText} · ${formatTypeCounts(metadata.analysis.countsByType)}`,
-      recordCount: data.records.length,
+      summary: `${recordCount.toLocaleString()} records · ${dateRangeText} · ${formatTypeCounts(metadata.analysis.countsByType)}`,
+      recordCount,
       categories,
       dateRange: metadata.analysis.dateRange ?? undefined,
       duplicateCount: metadata.analysis.duplicateCount,

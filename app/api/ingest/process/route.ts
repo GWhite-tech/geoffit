@@ -155,6 +155,7 @@ export async function POST(request: Request) {
           ingestRunId: result.ingestRunId,
           attempt: result.attempt,
           status: result.status,
+          incomplete: result.status === "partial",
           facts: result.facts,
           timeline: result.timeline,
         },

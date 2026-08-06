@@ -95,6 +95,46 @@ export class HealthStore {
     this.emit()
   }
 
+  /**
+   * Bulk ingest for streamed Apple Health batches: merge in memory,
+   * persist + summary once at commit (avoids O(n) sort/IDB write per batch).
+   */
+  private bulkMap: Map<string, HealthRecord> | null = null
+
+  beginBulkIngest(): void {
+    this.bulkMap = new Map(
+      this.records.map((record) => [record.fingerprint || record.id, record])
+    )
+  }
+
+  addBulkIngest(records: HealthRecord[]): void {
+    if (!this.bulkMap) {
+      this.beginBulkIngest()
+    }
+    const map = this.bulkMap!
+    for (const record of records) {
+      map.set(record.fingerprint || record.id, record)
+    }
+  }
+
+  async commitBulkIngest(): Promise<void> {
+    if (!this.bulkMap) return
+    this.records = [...this.bulkMap.values()].sort((a, b) =>
+      a.startDate.localeCompare(b.startDate)
+    )
+    this.bulkMap = null
+    this.hydrated = true
+    this.recomputeSummary()
+    console.info(
+      "[HealthStore] after bulk ingest",
+      countByType(this.records),
+      "hasData=",
+      this.currentSummary.hasData
+    )
+    await this.persist()
+    this.emit()
+  }
+
   clear(): void {
     if (this.records.length === 0 && this.currentSummary === EMPTY_SUMMARY) {
       return

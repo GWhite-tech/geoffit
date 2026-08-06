@@ -27,17 +27,17 @@ export function TrainingWorkspace() {
   const controls = useTrainingControls()
 
   return (
-    <div className="flex h-[calc(100svh-2.75rem)] w-full overflow-hidden">
+    <div className="flex min-h-0 w-full md:h-[calc(100svh-2.75rem)] md:overflow-hidden">
       <div className="hidden h-full w-[260px] shrink-0 overflow-y-auto xl:block">
         <TrainingNav view={view} />
       </div>
 
-      <div className="min-w-0 flex-1 overflow-y-auto">
+      <div className="min-w-0 flex-1 md:overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={transitions.fadeUp}
-          className="mx-auto flex w-full max-w-[1100px] flex-col gap-16 px-5 py-8 lg:px-10"
+          className="mx-auto flex w-full max-w-[390px] flex-col gap-12 px-5 py-6 md:max-w-[1100px] md:gap-16 md:py-8 lg:px-10"
         >
           <header className="flex flex-wrap items-end justify-between gap-4">
             <div>

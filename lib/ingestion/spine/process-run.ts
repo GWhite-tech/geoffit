@@ -169,7 +169,15 @@ async function processIngestRunBody(
     }
   }
 
-  const attempt = prior.attempt + 1
+  const resumingPartial =
+    prior.status === "partial" ||
+    (prior.status === "running" &&
+      prior.stats.apple_health_persist != null &&
+      typeof prior.stats.apple_health_persist === "object" &&
+      (prior.stats.apple_health_persist as { complete?: unknown }).complete ===
+        false)
+
+  const attempt = resumingPartial ? Math.max(1, prior.attempt) : prior.attempt + 1
   if (attempt > parser.maxAttempts) {
     const parse = emptyParseFailure(
       `Exceeded max attempts (${parser.maxAttempts}) for ${parser.id}.`
@@ -265,6 +273,7 @@ async function processIngestRunBody(
       ingestRunId: options.ingestRunId,
       attempt,
       signal: options.signal,
+      priorStats: prior.stats,
     })
   } catch (error) {
     // Raw exception first — do not map before this log.
@@ -304,7 +313,13 @@ async function processIngestRunBody(
   let facts = null
   let timeline = null
 
-  if (parse.success) {
+  const incomplete =
+    parse.success &&
+    parse.diagnostics != null &&
+    typeof parse.diagnostics === "object" &&
+    parse.diagnostics.incomplete === true
+
+  if (parse.success && !incomplete) {
     try {
       facts = await factWriter.write({
         userId: options.userId,
@@ -326,18 +341,33 @@ async function processIngestRunBody(
     }
   }
 
-  const status = parse.success ? "succeeded" : "failed"
+  const status = parse.success
+    ? incomplete
+      ? "partial"
+      : "succeeded"
+    : "failed"
   const diagnosticsJson =
     parse.diagnostics && typeof parse.diagnostics === "object"
       ? (parse.diagnostics as Record<string, unknown>)
+      : null
+
+  const persistMeta =
+    diagnosticsJson &&
+    diagnosticsJson.persist &&
+    typeof diagnosticsJson.persist === "object"
+      ? (diagnosticsJson.persist as Record<string, unknown>)
       : null
 
   await updateIngestRun(options.supabase, {
     ingestRunId: options.ingestRunId,
     userId: options.userId,
     status,
-    errorSummary: parse.success ? null : parse.error,
-    finished: true,
+    errorSummary: parse.success
+      ? incomplete
+        ? "Parse paused under server time limit; continue required."
+        : null
+      : parse.error,
+    finished: !incomplete,
     diagnosticsJson,
     stats: {
       ...prior.stats,
@@ -346,6 +376,7 @@ async function processIngestRunBody(
       file_id: primary.id,
       parser_id: parser.id,
       content_fingerprint: contentFingerprint,
+      apple_health_persist: persistMeta,
       // Keep a compact pointer in stats; full payload lives on diagnostics_json.
       diagnostics_summary: diagnosticsJson
         ? {
@@ -354,6 +385,8 @@ async function processIngestRunBody(
             failed_stage: diagnosticsJson.failed_stage ?? null,
             total_characters: diagnosticsJson.total_characters ?? null,
             biomarkers_found: diagnosticsJson.biomarkers_found ?? null,
+            incomplete: diagnosticsJson.incomplete ?? null,
+            records_mapped: diagnosticsJson.recordsMapped ?? null,
           }
         : null,
       facts_written: facts?.written ?? 0,

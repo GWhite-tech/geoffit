@@ -8,16 +8,23 @@ import { cn } from "@/lib/utils"
 import { transitions } from "@/lib/theme"
 
 export interface MorningBriefProps {
-  name: string
+  name?: string
   greeting?: string
+  /** Full title override — preferred over greeting + name. */
+  title?: string
   body?: string
   lines?: string[]
   className?: string
 }
 
+/**
+ * @deprecated Prefer DailyBriefHeader + MissionControlViewModel.
+ * Kept for any residual imports; no "Good morning" / "Geoff" defaults.
+ */
 export function MorningBrief({
   name,
-  greeting = "Good morning",
+  greeting,
+  title,
   body,
   lines,
   className,
@@ -25,6 +32,11 @@ export function MorningBrief({
   const today = format(new Date(), "EEEE, d MMMM yyyy")
   const paragraphs =
     lines && lines.length > 0 ? lines : body ? [body] : ([] as string[])
+
+  const heading =
+    title?.trim() ||
+    (greeting && name ? `${greeting}, ${name}.` : null) ||
+    "Today's Brief"
 
   return (
     <motion.section
@@ -34,10 +46,10 @@ export function MorningBrief({
       className={cn("max-w-[40rem]", className)}
     >
       <SectionLabel className="text-[11px] tracking-[0.2em] text-muted-foreground/70">
-        Morning Brief
+        Daily Brief
       </SectionLabel>
       <h1 className="mt-5 font-sans text-[40px] leading-[1.08] font-semibold tracking-[-0.03em] text-foreground sm:text-[44px]">
-        {greeting}, {name}.
+        {heading}
       </h1>
       <p className="mt-3 text-[13px] text-muted-foreground">{today}</p>
       <div className="mt-8 space-y-3">

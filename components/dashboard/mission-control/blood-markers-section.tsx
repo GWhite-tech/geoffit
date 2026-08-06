@@ -18,10 +18,9 @@ export function BloodMarkersSection({
   return (
     <section className="space-y-6">
       <div>
-        <SectionLabel>Blood Markers</SectionLabel>
+        <SectionLabel>Blood</SectionLabel>
         <p className="mt-2 max-w-lg text-[15px] leading-relaxed text-muted-foreground">
-          Lab trends across tests — open a marker to explore the full blood
-          history.
+          Lab trends — open a marker for the full history.
         </p>
       </div>
 

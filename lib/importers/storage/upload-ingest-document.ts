@@ -121,6 +121,162 @@ async function uploadViaStandardApi(
   if (error) throw new Error(error.message)
 }
 
+function decodeUploadMetadataHeader(
+  header: string | undefined
+): Record<string, string> {
+  if (!header) return {}
+  const decoded: Record<string, string> = {}
+  for (const part of header.split(",")) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    const space = trimmed.indexOf(" ")
+    if (space <= 0) continue
+    const key = trimmed.slice(0, space)
+    const b64 = trimmed.slice(space + 1)
+    try {
+      decoded[key] = atob(b64)
+    } catch {
+      decoded[key] = b64
+    }
+  }
+  return decoded
+}
+
+function redactAuthorization(value: string | null | undefined): string | null {
+  if (value == null || value === "") return null
+  const match = /^Bearer\s+(.+)$/i.exec(value.trim())
+  if (!match) return "[redacted]"
+  const token = match[1]
+  const suffix = token.length <= 8 ? "…" : token.slice(-4)
+  return `Bearer [redacted len=${token.length} …${suffix}]`
+}
+
+function bodyByteLength(body: unknown): number | null {
+  if (body == null) return null
+  if (typeof Blob !== "undefined" && body instanceof Blob) return body.size
+  if (body instanceof ArrayBuffer) return body.byteLength
+  if (ArrayBuffer.isView(body)) return body.byteLength
+  if (typeof body === "string") return body.length
+  return null
+}
+
+function collectResponseHeaders(
+  res: tus.HttpResponse
+): Record<string, string> {
+  const xhr = res.getUnderlyingObject() as XMLHttpRequest | undefined
+  const raw =
+    typeof xhr?.getAllResponseHeaders === "function"
+      ? xhr.getAllResponseHeaders()
+      : ""
+  const headers: Record<string, string> = {}
+  for (const line of raw.trim().split(/[\r\n]+/)) {
+    const idx = line.indexOf(":")
+    if (idx <= 0) continue
+    headers[line.slice(0, idx).trim().toLowerCase()] = line
+      .slice(idx + 1)
+      .trim()
+  }
+  for (const name of [
+    "upload-offset",
+    "upload-length",
+    "tus-resumable",
+    "location",
+    "content-type",
+    "sb-request-id",
+    "x-request-id",
+    "x-sb-error",
+    "x-error-code",
+    "x-error-message",
+  ]) {
+    const value = res.getHeader(name)
+    if (value != null && value !== "") headers[name] = value
+  }
+  return headers
+}
+
+function logTusHttpExchange(input: {
+  event: "tus_request" | "tus_response" | "tus_error"
+  requestOrdinal: number
+  method: string | null
+  url: string | null
+  projectUrl: string
+  bucket: string
+  endpoint: string
+  fileName: string
+  fileType: string
+  fileSizeBytes: number
+  chunkSize: number
+  uploadDataDuringCreation: boolean
+  metadata: Record<string, string>
+  headers: Record<string, string | null>
+  contentLength: number | null
+  uploadMetadataDecoded: Record<string, string>
+  status?: number | null
+  responseHeaders?: Record<string, string> | null
+  responseBody?: string | null
+  message?: string | null
+}): void {
+  const uploadLengthRaw = input.headers["Upload-Length"] ?? null
+  const uploadLengthNumber =
+    uploadLengthRaw != null && uploadLengthRaw !== ""
+      ? Number(uploadLengthRaw)
+      : null
+  const bucketName = input.uploadMetadataDecoded.bucketName ?? null
+
+  const payload = {
+    scope: "storage-tus-upload",
+    event: input.event,
+    requestOrdinal: input.requestOrdinal,
+    method: input.method,
+    url: input.url,
+    bucket: input.bucket,
+    endpoint: input.endpoint,
+    projectUrl: input.projectUrl,
+    fileName: input.fileName,
+    fileType: input.fileType,
+    fileSizeBytes: input.fileSizeBytes,
+    chunkSize: input.chunkSize,
+    uploadDataDuringCreation: input.uploadDataDuringCreation,
+    metadata: input.metadata,
+    headers: {
+      "Upload-Length": uploadLengthRaw,
+      "Tus-Resumable": input.headers["Tus-Resumable"] ?? null,
+      "Upload-Metadata": input.headers["Upload-Metadata"] ?? null,
+      "Upload-Offset": input.headers["Upload-Offset"] ?? null,
+      "Content-Type": input.headers["Content-Type"] ?? null,
+      "Content-Length":
+        input.contentLength == null ? null : String(input.contentLength),
+      Authorization: redactAuthorization(input.headers.Authorization),
+      "x-upsert": input.headers["x-upsert"] ?? null,
+    },
+    "Upload-Metadata-decoded": input.uploadMetadataDecoded,
+    verify: {
+      uploadLengthEqualsFileSize:
+        uploadLengthNumber === null
+          ? null
+          : uploadLengthNumber === input.fileSizeBytes,
+      bucketNameEqualsRawIngest: bucketName === "raw-ingest",
+      bucketName,
+    },
+    status: input.status ?? null,
+    responseHeaders: input.responseHeaders ?? null,
+    responseBody: input.responseBody ?? null,
+    requestId:
+      input.responseHeaders?.["sb-request-id"] ??
+      input.responseHeaders?.["x-request-id"] ??
+      null,
+    "x-request-id": input.responseHeaders?.["x-request-id"] ?? null,
+    "x-sb-error": input.responseHeaders?.["x-sb-error"] ?? null,
+    message: input.message ?? null,
+  }
+
+  if (input.event === "tus_error") {
+    console.error(JSON.stringify(payload))
+  } else {
+    console.info(JSON.stringify(payload))
+  }
+}
+
 async function uploadViaTus(input: {
   accessToken: string
   projectUrl: string
@@ -130,25 +286,198 @@ async function uploadViaTus(input: {
   onProgress?: (ratio: number) => void
 }): Promise<void> {
   const endpoint = `${storageHostname(input.projectUrl)}/storage/v1/upload/resumable`
+  const uploadDataDuringCreation = true
+  const fileType = input.file.type || "application/octet-stream"
+  const metadata = {
+    bucketName: input.bucket,
+    objectName: input.path,
+    contentType: fileType,
+    cacheControl: "3600",
+  }
+  const staticHeaders = {
+    authorization: `Bearer ${input.accessToken}`,
+    "x-upsert": "false",
+  }
+
+  // STEP 1 — exact runtime config immediately before creating the TUS upload
+  console.info(
+    JSON.stringify({
+      scope: "storage-tus-upload",
+      event: "tus_upload_planned",
+      bucket: input.bucket,
+      endpoint,
+      projectUrl: input.projectUrl,
+      fileName: input.file.name,
+      fileType,
+      fileSizeBytes: input.file.size,
+      chunkSize: TUS_CHUNK_SIZE,
+      uploadDataDuringCreation,
+      metadata,
+      headers: {
+        authorization: redactAuthorization(staticHeaders.authorization),
+        "x-upsert": staticHeaders["x-upsert"],
+      },
+    })
+  )
 
   await new Promise<void>((resolve, reject) => {
+    let requestOrdinal = 0
     const upload = new tus.Upload(input.file, {
       endpoint,
       retryDelays: [0, 3000, 5000, 10000, 20000],
-      headers: {
-        authorization: `Bearer ${input.accessToken}`,
-        "x-upsert": "false",
-      },
-      uploadDataDuringCreation: true,
+      headers: staticHeaders,
+      uploadDataDuringCreation,
       removeFingerprintOnSuccess: true,
-      metadata: {
-        bucketName: input.bucket,
-        objectName: input.path,
-        contentType: input.file.type || "application/octet-stream",
-        cacheControl: "3600",
-      },
+      metadata,
       chunkSize: TUS_CHUNK_SIZE,
-      onError: (error) => reject(error),
+      onBeforeRequest: (req) => {
+        requestOrdinal += 1
+        const ordinal = requestOrdinal
+        const xhr = req.getUnderlyingObject() as XMLHttpRequest | undefined
+        const originalSend = xhr?.send?.bind(xhr)
+
+        const logRequest = (contentLength: number | null) => {
+          logTusHttpExchange({
+            event: "tus_request",
+            requestOrdinal: ordinal,
+            method: req.getMethod(),
+            url: req.getURL(),
+            projectUrl: input.projectUrl,
+            bucket: input.bucket,
+            endpoint,
+            fileName: input.file.name,
+            fileType,
+            fileSizeBytes: input.file.size,
+            chunkSize: TUS_CHUNK_SIZE,
+            uploadDataDuringCreation,
+            metadata,
+            headers: {
+              "Upload-Length": req.getHeader("Upload-Length") ?? null,
+              "Tus-Resumable": req.getHeader("Tus-Resumable") ?? null,
+              "Upload-Metadata": req.getHeader("Upload-Metadata") ?? null,
+              "Upload-Offset": req.getHeader("Upload-Offset") ?? null,
+              "Content-Type": req.getHeader("Content-Type") ?? null,
+              Authorization:
+                req.getHeader("Authorization") ??
+                req.getHeader("authorization") ??
+                staticHeaders.authorization,
+              "x-upsert":
+                req.getHeader("x-upsert") ?? staticHeaders["x-upsert"],
+            },
+            contentLength,
+            uploadMetadataDecoded: decodeUploadMetadataHeader(
+              req.getHeader("Upload-Metadata")
+            ),
+          })
+        }
+
+        // Intercept immediately before the request leaves the browser so we
+        // can observe Content-Length of the body (set by the browser on send).
+        if (xhr && originalSend) {
+          xhr.send = ((body?: Document | XMLHttpRequestBodyInit | null) => {
+            logRequest(bodyByteLength(body ?? null))
+            return originalSend(body as XMLHttpRequestBodyInit | Document | null)
+          }) as typeof xhr.send
+        } else {
+          logRequest(null)
+        }
+      },
+      onAfterResponse: (req, res) => {
+        const responseHeaders = collectResponseHeaders(res)
+        logTusHttpExchange({
+          event: "tus_response",
+          requestOrdinal,
+          method: req.getMethod(),
+          url: req.getURL(),
+          projectUrl: input.projectUrl,
+          bucket: input.bucket,
+          endpoint,
+          fileName: input.file.name,
+          fileType,
+          fileSizeBytes: input.file.size,
+          chunkSize: TUS_CHUNK_SIZE,
+          uploadDataDuringCreation,
+          metadata,
+          headers: {
+            "Upload-Length": req.getHeader("Upload-Length") ?? null,
+            "Tus-Resumable": req.getHeader("Tus-Resumable") ?? null,
+            "Upload-Metadata": req.getHeader("Upload-Metadata") ?? null,
+            "Upload-Offset": req.getHeader("Upload-Offset") ?? null,
+            "Content-Type": req.getHeader("Content-Type") ?? null,
+            Authorization:
+              req.getHeader("Authorization") ??
+              req.getHeader("authorization") ??
+              staticHeaders.authorization,
+            "x-upsert":
+              req.getHeader("x-upsert") ?? staticHeaders["x-upsert"],
+          },
+          contentLength: null,
+          uploadMetadataDecoded: decodeUploadMetadataHeader(
+            req.getHeader("Upload-Metadata")
+          ),
+          status: res.getStatus(),
+          responseHeaders,
+          responseBody: res.getBody(),
+        })
+      },
+      onShouldRetry: (error, retryAttempt) => {
+        const status = error.originalResponse?.getStatus()
+        console.info(
+          JSON.stringify({
+            scope: "storage-tus-upload",
+            event: "tus_retry_decision",
+            status: status ?? null,
+            retryAttempt,
+            willRetry: status !== 413 && retryAttempt < 5,
+            message: error.message,
+          })
+        )
+        if (status === 413) return false
+        return retryAttempt < 5
+      },
+      onError: (error) => {
+        const detailed = error instanceof tus.DetailedError ? error : null
+        const res = detailed?.originalResponse ?? null
+        const req = detailed?.originalRequest ?? null
+        const responseHeaders = res ? collectResponseHeaders(res) : null
+        logTusHttpExchange({
+          event: "tus_error",
+          requestOrdinal,
+          method: req?.getMethod() ?? null,
+          url: req?.getURL() ?? null,
+          projectUrl: input.projectUrl,
+          bucket: input.bucket,
+          endpoint,
+          fileName: input.file.name,
+          fileType,
+          fileSizeBytes: input.file.size,
+          chunkSize: TUS_CHUNK_SIZE,
+          uploadDataDuringCreation,
+          metadata,
+          headers: {
+            "Upload-Length": req?.getHeader("Upload-Length") ?? null,
+            "Tus-Resumable": req?.getHeader("Tus-Resumable") ?? null,
+            "Upload-Metadata": req?.getHeader("Upload-Metadata") ?? null,
+            "Upload-Offset": req?.getHeader("Upload-Offset") ?? null,
+            "Content-Type": req?.getHeader("Content-Type") ?? null,
+            Authorization:
+              req?.getHeader("Authorization") ??
+              req?.getHeader("authorization") ??
+              staticHeaders.authorization,
+            "x-upsert":
+              req?.getHeader("x-upsert") ?? staticHeaders["x-upsert"],
+          },
+          contentLength: null,
+          uploadMetadataDecoded: decodeUploadMetadataHeader(
+            req?.getHeader("Upload-Metadata")
+          ),
+          status: res?.getStatus() ?? null,
+          responseHeaders,
+          responseBody: res?.getBody() ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        })
+        reject(error)
+      },
       onProgress: (bytesUploaded, bytesTotal) => {
         if (bytesTotal > 0 && input.onProgress) {
           input.onProgress(bytesUploaded / bytesTotal)
@@ -158,8 +487,9 @@ async function uploadViaTus(input: {
     })
 
     void upload.findPreviousUploads().then((previous) => {
-      if (previous.length > 0) {
-        upload.resumeFromPreviousUpload(previous[0]!)
+      const prior = previous[0]
+      if (prior) {
+        upload.resumeFromPreviousUpload(prior)
       }
       upload.start()
     })
@@ -284,6 +614,21 @@ export async function uploadIngestDocument(input: {
   })
 
   try {
+    console.info(
+      JSON.stringify({
+        scope: "storage-tus-upload",
+        event: "upload_path_selected",
+        bucket: spec.bucket,
+        documentKind: spec.documentKind,
+        fileName: file.name,
+        fileSizeBytes: file.size,
+        resumableThresholdBytes: RESUMABLE_THRESHOLD_BYTES,
+        useTus: file.size >= RESUMABLE_THRESHOLD_BYTES,
+        chunkSize: TUS_CHUNK_SIZE,
+        objectPath: storagePath,
+        targetsRawIngestBucket: spec.bucket === "raw-ingest",
+      })
+    )
     if (file.size >= RESUMABLE_THRESHOLD_BYTES) {
       await uploadViaTus({
         accessToken,

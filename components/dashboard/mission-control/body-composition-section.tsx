@@ -47,6 +47,10 @@ export function BodyCompositionSection({
     () => new Set(["weight"])
   )
 
+  const hasSeries = bodyComposition.series.some(
+    (series) => series.available && series.points.length > 0
+  )
+
   const chartConfig = useMemo(() => {
     const config: ChartConfig = {}
     for (const series of bodyComposition.series) {
@@ -93,6 +97,8 @@ export function BodyCompositionSection({
   const activeSeries = bodyComposition.series.filter(
     (series) => enabled.has(series.id) && series.available
   )
+
+  if (!hasSeries) return null
   const pointsInWindow = activeSeries.reduce(
     (sum, series) => sum + series.points.length,
     0
@@ -118,9 +124,9 @@ export function BodyCompositionSection({
     <section className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <SectionLabel>Body Composition</SectionLabel>
+          <SectionLabel>Body</SectionLabel>
           <p className="mt-2 max-w-lg text-[15px] leading-relaxed text-muted-foreground">
-            Longitudinal trends — toggle metrics to compare over time.
+            Weight and composition trends over time.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-0.5">
@@ -149,28 +155,23 @@ export function BodyCompositionSection({
         className="mc-surface-hero px-5 py-7 sm:px-8 sm:py-10"
       >
         <div className="mb-8 flex flex-wrap gap-2">
-          {bodyComposition.series.map((series) => {
+          {bodyComposition.series
+            .filter((series) => series.available)
+            .map((series) => {
             const on = enabled.has(series.id)
             return (
               <button
                 key={series.id}
                 type="button"
-                disabled={!series.available}
-                title={series.emptyHint ?? undefined}
                 onClick={() => toggle(series.id, series.available)}
                 className={cn(
                   "inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-[12px] font-medium transition-colors",
-                  !series.available &&
-                    "cursor-not-allowed text-muted-foreground/35",
-                  series.available &&
-                    on &&
-                    "bg-primary text-primary-foreground",
-                  series.available &&
-                    !on &&
-                    "border border-border/60 text-muted-foreground hover:text-foreground"
+                  on
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                {series.available && !on ? (
+                {!on ? (
                   <span
                     className="size-1.5 rounded-full"
                     style={{ backgroundColor: series.color }}
@@ -178,22 +179,12 @@ export function BodyCompositionSection({
                   />
                 ) : null}
                 {series.label}
-                {!series.available ? " · Soon" : ""}
               </button>
             )
           })}
         </div>
 
-        {activeSeries.length === 0 ? (
-          <p className="px-1 text-[15px] leading-relaxed text-muted-foreground">
-            {bodyComposition.series.find((s) => s.id === "weight")?.emptyHint ??
-              "Import Body Mass from Apple Health to chart body composition."}
-          </p>
-        ) : chartData.length === 0 ? (
-          <p className="px-1 text-[15px] leading-relaxed text-muted-foreground">
-            No readings in this time period. Try a longer range.
-          </p>
-        ) : (
+        {activeSeries.length === 0 || chartData.length === 0 ? null : (
           <ChartContainer
             config={chartConfig}
             className="aspect-[2.15/1] min-h-[360px] w-full"

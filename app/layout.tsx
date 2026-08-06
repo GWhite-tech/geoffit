@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 
 import { AuthProvider } from "@/components/auth/auth-provider"
@@ -23,6 +23,13 @@ export const metadata: Metadata = {
   description: "Track, optimize, and understand your health with AI-powered insights.",
 }
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#09090B",
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -37,12 +44,12 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("geoffit.theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light";}catch(e){document.documentElement.classList.add("dark")}})();`,
+            __html: `(function(){try{var t=localStorage.getItem("geoffit.theme");var d=t!=="light";var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light";}catch(e){document.documentElement.classList.add("dark")}})();`,
           }}
         />
       </head>
       <body className="min-h-full">
-        <ThemeProvider initialTheme="system">
+        <ThemeProvider initialTheme="dark">
           <AuthProvider>
             <PreferencesProvider>
               <TooltipProvider>{children}</TooltipProvider>

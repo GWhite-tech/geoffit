@@ -64,6 +64,21 @@ async function readIngestProcessResponse(
   }
 }
 
+function isIncompleteIngestResponse(body: IngestProcessApiResponse): boolean {
+  if (!body.success) return false
+  const diagnostics = body.diagnostics
+  if (diagnostics && typeof diagnostics === "object") {
+    if (diagnostics.incomplete === true) return true
+    if (diagnostics.status === "partial") return true
+  }
+  const persist = body.payload?.metadata?.persist
+  if (persist && typeof persist === "object") {
+    const complete = (persist as { complete?: unknown }).complete
+    if (complete === false) return true
+  }
+  return body.payload?.metadata?.incomplete === true
+}
+
 export type StartDocumentIngestInput = {
   supabase: SupabaseClient
   file: File
@@ -82,8 +97,28 @@ export type StartDocumentIngestResult = {
   api: IngestProcessApiResponse | null
 }
 
+async function postIngestProcess(input: {
+  documentKind: DocumentKind
+  fileId: string
+  ingestRunId: string
+  retry?: boolean
+}): Promise<IngestProcessApiResponse> {
+  const response = await fetch("/api/ingest/process", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentKind: input.documentKind,
+      fileId: input.fileId,
+      ingestRunId: input.ingestRunId,
+      retry: input.retry,
+    }),
+  })
+  return readIngestProcessResponse(response)
+}
+
 /**
  * Upload → user_files → ingest_runs → (optional) /api/ingest/process.
+ * Large Apple Health exports may need multiple process calls (time budget).
  */
 export async function startDocumentIngest(
   input: StartDocumentIngestInput
@@ -115,17 +150,48 @@ export async function startDocumentIngest(
     }
   }
 
-  const response = await fetch("/api/ingest/process", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  let body = await postIngestProcess({
+    documentKind: input.documentKind,
+    fileId: uploaded.file.id,
+    ingestRunId: uploaded.ingestRunId,
+  })
+
+  // Resume time-budgeted Apple Health (and similar) chunks until complete.
+  const maxContinues =
+    input.documentKind === "apple_health_export" ? 100 : 0
+  let continues = 0
+  while (
+    isIncompleteIngestResponse(body) &&
+    continues < maxContinues
+  ) {
+    continues += 1
+    console.info("[startDocumentIngest] continuing partial ingest", {
+      ingestRunId: uploaded.ingestRunId,
+      documentKind: input.documentKind,
+      continues,
+    })
+    body = await postIngestProcess({
       documentKind: input.documentKind,
       fileId: uploaded.file.id,
       ingestRunId: uploaded.ingestRunId,
-    }),
-  })
+    })
+  }
 
-  const body = await readIngestProcessResponse(response)
+  if (isIncompleteIngestResponse(body)) {
+    return {
+      fileId: uploaded.file.id,
+      ingestRunId: uploaded.ingestRunId,
+      documentKind: input.documentKind,
+      reusedExisting: uploaded.reusedExisting,
+      api: {
+        ...body,
+        success: false,
+        error:
+          body.error?.trim() ||
+          "Import is still incomplete after the maximum number of continue passes.",
+      },
+    }
+  }
 
   return {
     fileId: uploaded.file.id,
@@ -142,15 +208,10 @@ export async function retryDocumentIngest(input: {
   fileId: string
   ingestRunId: string
 }): Promise<IngestProcessApiResponse> {
-  const response = await fetch("/api/ingest/process", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      documentKind: input.documentKind,
-      fileId: input.fileId,
-      ingestRunId: input.ingestRunId,
-      retry: true,
-    }),
+  return postIngestProcess({
+    documentKind: input.documentKind,
+    fileId: input.fileId,
+    ingestRunId: input.ingestRunId,
+    retry: true,
   })
-  return readIngestProcessResponse(response)
 }

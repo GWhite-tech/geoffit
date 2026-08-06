@@ -1,21 +1,33 @@
-import { unzip } from "fflate"
+/**
+ * Apple Health archive / XML open helpers.
+ *
+ * ZIP path is streaming-only (never materialises the archive or export.xml).
+ */
 
-import { APPLE_HEALTH_XML_NAMES } from "./constants"
 import type { AppleHealthParseOptions } from "./progress"
 import {
   STAGE_MESSAGES,
   createEmptyProgressEvent,
-  createProgressThrottler,
-  estimateRemainingSeconds,
   yieldToMain,
 } from "./progress"
+import {
+  openStreamingAppleHealthXml,
+  openStreamingExportXmlFromZip,
+  type StreamExportXmlResult,
+} from "./stream-zip-xml"
+
+export {
+  isPrimaryExportXmlPath,
+  openStreamingAppleHealthXml,
+  openStreamingExportXmlFromZip,
+  openStreamingExportXmlFile,
+} from "./stream-zip-xml"
 
 export async function* fileByteChunks(
   file: File,
-  chunkSize = 256 * 1024
+  _chunkSize = 256 * 1024
 ): AsyncGenerator<Uint8Array> {
   const reader = file.stream().getReader()
-
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -36,143 +48,60 @@ export async function* uint8ArrayChunks(
   }
 }
 
-function scoreXmlPath(path: string): number {
-  const normalized = path.replace(/\\/g, "/").toLowerCase()
-  if (normalized.endsWith("/export.xml")) return 100
-  if (normalized.endsWith("/apple_health_export/export.xml")) return 95
-  if (APPLE_HEALTH_XML_NAMES.some((name) => normalized.endsWith(`/${name}`))) {
-    return 90
-  }
-  if (normalized.endsWith(".xml") && !normalized.includes("__macosx")) return 50
-  return 0
-}
-
-export interface AppleHealthZipExtraction {
-  bytes: Uint8Array
-  entryPath: string
-  zipEntries: string[]
-}
-
-export async function extractXmlBytesFromZip(
-  file: File,
-  options: AppleHealthParseOptions = {}
-): Promise<AppleHealthZipExtraction> {
-  const startedAt = Date.now()
-  const throttler = createProgressThrottler(options.onProgress)
-
-  throttler.emit(
-    createEmptyProgressEvent({
-      stage: "reading_zip",
-      progress: 2,
-      message: STAGE_MESSAGES.reading_zip,
-    }),
-    true
-  )
-  await yieldToMain()
-
-  const buffer = new Uint8Array(await file.arrayBuffer())
-
-  throttler.emit(
-    createEmptyProgressEvent({
-      stage: "extracting_xml",
-      progress: 12,
-      estimatedRemainingTime: estimateRemainingSeconds(startedAt, 0.15),
-      message: STAGE_MESSAGES.extracting_xml,
-    }),
-    true
-  )
-  await yieldToMain()
-
-  const entries = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-    unzip(buffer, (error, data) => {
-      if (error) reject(error)
-      else resolve(data)
-    })
-  })
-
-  const zipEntries = Object.keys(entries).sort((a, b) => a.localeCompare(b))
-
-  const candidates = Object.entries(entries)
-    .map(([path, bytes]) => ({ path, bytes, score: scoreXmlPath(path) }))
-    .filter((entry) => entry.score > 0 && entry.bytes.byteLength > 0)
-    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
-
-  if (candidates.length === 0) {
-    const listing =
-      zipEntries.length > 0
-        ? `ZIP contains:\n${zipEntries.map((path) => `  - ${path}`).join("\n")}`
-        : "ZIP archive is empty."
-    throw new Error(
-      `No Apple Health export.xml found inside ZIP archive "${file.name}".\n${listing}`
-    )
-  }
-
-  throttler.emit(
-    createEmptyProgressEvent({
-      stage: "extracting_xml",
-      progress: 20,
-      estimatedRemainingTime: estimateRemainingSeconds(startedAt, 0.22),
-      message: `Extracted ${candidates[0].path}`,
-    }),
-    true
-  )
-  throttler.flush()
-
-  return {
-    bytes: candidates[0].bytes,
-    entryPath: candidates[0].path,
-    zipEntries,
-  }
-}
-
 export interface OpenAppleHealthStreamResult {
-  stream: AsyncGenerator<Uint8Array>
+  stream: AsyncIterable<Uint8Array>
   format: "xml" | "zip"
   entryPath: string | null
   zipEntries: string[]
+  /** Always null for the streaming reader — XML is never fully buffered. */
   xmlByteLength: number | null
 }
 
+/**
+ * Open Apple Health export.xml as a byte stream.
+ * For ZIP inputs, only export.xml is inflated; export_cda.xml is ignored.
+ */
 export async function openAppleHealthXmlStream(
   file: File,
   options: AppleHealthParseOptions = {}
 ): Promise<OpenAppleHealthStreamResult> {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? ""
+  options.onProgress?.(
+    createEmptyProgressEvent({
+      stage: "extracting_xml",
+      progress: 8,
+      message: STAGE_MESSAGES.extracting_xml,
+    })
+  )
+  await yieldToMain()
 
-  if (extension === "xml") {
-    options.onProgress?.(
-      createEmptyProgressEvent({
-        stage: "extracting_xml",
-        progress: 8,
-        message: "Opening export.xml...",
-      })
-    )
-    await yieldToMain()
+  const opened: StreamExportXmlResult = await openStreamingAppleHealthXml(file)
 
-    // Buffer-based chunks work in Node and browsers (no ReadableStream dependency).
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    return {
-      stream: uint8ArrayChunks(bytes),
-      format: "xml",
-      entryPath: file.name,
-      zipEntries: [],
-      xmlByteLength: bytes.byteLength,
-    }
+  options.onProgress?.(
+    createEmptyProgressEvent({
+      stage: "extracting_xml",
+      progress: 20,
+      message: `Streaming ${opened.entryPath}`,
+    })
+  )
+
+  return {
+    stream: opened.chunks,
+    format: opened.format,
+    entryPath: opened.entryPath,
+    zipEntries: [],
+    xmlByteLength: null,
   }
+}
 
-  if (extension === "zip") {
-    const { bytes, entryPath, zipEntries } = await extractXmlBytesFromZip(
-      file,
-      options
-    )
-    return {
-      stream: uint8ArrayChunks(bytes),
-      format: "zip",
-      entryPath,
-      zipEntries,
-      xmlByteLength: bytes.byteLength,
-    }
-  }
-
-  throw new Error("Expected an Apple Health export.xml or export.zip file.")
+/**
+ * @deprecated Full-archive inflate removed. Use openStreamingExportXmlFromZip.
+ */
+export async function extractXmlBytesFromZip(
+  file: File,
+  _options: AppleHealthParseOptions = {}
+): Promise<never> {
+  void file
+  throw new Error(
+    "extractXmlBytesFromZip has been removed. Use openStreamingExportXmlFromZip / runStreamingAppleHealthPipeline."
+  )
 }

@@ -6,7 +6,12 @@ export {
 } from "./body-composition"
 export type { BodyCompositionTypeDiagnostic } from "./body-composition"
 export { formatAppleHealthDiagnostics } from "./diagnostics"
-export { openAppleHealthXmlStream } from "./extract-xml"
+export {
+  openAppleHealthXmlStream,
+  openStreamingAppleHealthXml,
+  openStreamingExportXmlFromZip,
+  isPrimaryExportXmlPath,
+} from "./extract-xml"
 export {
   domainRecordToImportRecord,
   mapElementsToDomain,
@@ -14,6 +19,7 @@ export {
   parseAppleDate,
 } from "./mapper"
 export { parseAppleHealthXmlStream } from "./stream-parser"
+export { runStreamingAppleHealthPipeline } from "./streaming-pipeline"
 export type { AppleHealthDiagnostics } from "./types"
 export {
   AppleHealthImportCancelledError,

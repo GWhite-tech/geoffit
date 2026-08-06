@@ -9,17 +9,9 @@ import type { ImportPreview } from "@/lib/importers/ImportResult"
 import type { ParsedImportData } from "@/lib/importers/Importer"
 import type { IngestUploadSpec } from "@/lib/importers/storage/types"
 
-/** Stable document kinds — each registers exactly one parser. */
-export type DocumentKind =
-  | "blood_lab_pdf"
-  | "blood_screenshots"
-  | "dexa_pdf"
-  | "apple_health_export"
-  | "hevy_csv"
-  | "generic_csv"
-  | "progress_photo"
-  | "ecg"
-  | "medical_document"
+import type { DocumentKind } from "./document-kind"
+
+export type { DocumentKind } from "./document-kind"
 
 export type IngestRunStatus =
   | "queued"
@@ -53,12 +45,9 @@ export type ParseContext = {
   supabase: SupabaseClient
   userId: string
   documentKind: DocumentKind
-  /** Primary file (single-file docs). */
   file: StoredFileRef
-  /** Extra files (e.g. screenshot batches). */
   files: StoredFileRef[]
   bytes: Uint8Array
-  /** Parallel bytes for multi-file parsers (same order as `files`). */
   allBytes: Uint8Array[]
   ingestRunId: string
   attempt: number
@@ -68,32 +57,20 @@ export type ParseContext = {
 export type ParseResult = {
   success: boolean
   preview: ImportPreview | null
-  /** Opaque payload for confirm / fact writers (existing Import API shape). */
   payload: ParsedImportData | null
   warnings: string[]
   diagnostics: Record<string, unknown> | null
   error: string | null
-  /**
-   * Idempotency token for fact upserts (fingerprint / checksum / panel id).
-   * Writers use this to avoid double-apply on retry.
-   */
   contentFingerprint?: string | null
 }
 
 export type DocumentParser = {
-  /** Unique parser id (stable). */
   id: string
   kind: DocumentKind
   label: string
-  /** Storage upload spec; null = no file upload (manual entry). */
   uploadSpec: IngestUploadSpec | null
   execution: ParserExecutionMode
-  /** Max attempts before dead-letter (ingest_runs stays failed). */
   maxAttempts: number
-  /**
-   * Parse bytes already loaded from Storage.
-   * Must be pure w.r.t. DB facts — writers apply separately.
-   */
   parse: (ctx: ParseContext) => Promise<ParseResult>
 }
 
@@ -109,10 +86,6 @@ export type TimelineWriteResult = {
   errors: string[]
 }
 
-/**
- * Applies canonical FACT rows. Cloud SQL writers land with Phase 2 tables;
- * client-store bridge keeps today’s confirm UX working.
- */
 export type FactWriter = {
   id: string
   write: (input: {
@@ -140,10 +113,8 @@ export type ProcessIngestOptions = {
   userId: string
   documentKind: DocumentKind
   fileId: string
-  /** Optional extra file ids (screenshots). */
   fileIds?: string[]
   ingestRunId: string
-  /** Force re-parse even if prior attempt succeeded (retry). */
   retry?: boolean
   signal?: AbortSignal
   factWriter?: FactWriter

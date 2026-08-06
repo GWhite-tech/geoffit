@@ -17,20 +17,21 @@ The Route Handler’s own `MAX_BYTES = 25MB` never ran — the platform rejected
 
 ## Production pipeline
 
+Generic spine (all document kinds) — see [`document-ingestion-framework.md`](./document-ingestion-framework.md):
+
 ```text
 Browser
   1. SHA-256 checksum (idempotency)
-  2. Insert ingest_runs (queued) + upload bytes → private Storage (lab-pdfs)
-     • < 6 MB: supabase.storage.upload
-     • ≥ 6 MB: TUS resumable (tus-js-client → *.storage.supabase.co)
-  3. Insert user_files metadata (user_id, filename, size, checksum, uploaded_at)
-  4. POST /api/import/blood-test  JSON { fileId, ingestRunId }  ← tiny payload
+  2. Insert ingest_runs (queued) + upload bytes → private Storage
+  3. Insert user_files metadata
+  4. POST /api/ingest/process  JSON { documentKind, fileId, ingestRunId }
 Server
-  5. Auth + ownership check on user_files
-  6. Download PDF from Storage (user-scoped client)
-  7. Existing BloodTestImporter / parseBloodTestPdfOnServer
-  8. Update ingest_runs status → return same preview API shape
+  5. DocumentParser (registered by kind)
+  6. FactWriter + TimelineWriter (stubs → Phase 2)
+  7. Update ingest_runs → return preview API shape
 ```
+
+Blood PDF remains available at `/api/import/blood-test` as a thin alias.
 
 ## Buckets
 

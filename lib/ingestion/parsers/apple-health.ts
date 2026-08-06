@@ -4,6 +4,7 @@ import { AppleHealthImporter } from "@/lib/server/importers/AppleHealthImporter"
 import { APPLE_HEALTH_UPLOAD } from "@/lib/importers/storage/types"
 
 import type { DocumentParser } from "../types"
+import { bytesToFile } from "./bytes-to-file"
 
 export const appleHealthExportParser: DocumentParser = {
   id: "parser.apple_health_export",
@@ -14,9 +15,11 @@ export const appleHealthExportParser: DocumentParser = {
   maxAttempts: 5,
   async parse(ctx) {
     const fileName = ctx.file.originalFilename?.trim() || "export.zip"
-    const file = new File([ctx.bytes], fileName, {
-      type: ctx.file.mimeType || "application/zip",
-    })
+    const file = bytesToFile(
+      ctx.bytes,
+      fileName,
+      ctx.file.mimeType || "application/zip"
+    )
     const importer = new AppleHealthImporter()
     const api = await importer.parseUpload(file)
 

@@ -22,7 +22,5 @@ export function documentKindForSource(
 }
 
 export function sourceUsesIngestionSpine(sourceId: DataSourceId): boolean {
-  const kind = documentKindForSource(sourceId)
-  return kind != null && kind !== "blood_screenshots"
-  // screenshots: multi-file; Storage batch path lands next — still registered
+  return documentKindForSource(sourceId) != null
 }

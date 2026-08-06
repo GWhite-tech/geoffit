@@ -1,22 +1,22 @@
 import "server-only"
 
-import { HevyImporter } from "@/lib/server/importers/HevyImporter"
-import { HEVY_CSV_UPLOAD } from "@/lib/importers/storage/types"
+import { CSVImporter } from "@/lib/server/importers/CSVImporter"
+import { GENERIC_CSV_UPLOAD } from "@/lib/importers/storage/types"
 
 import type { DocumentParser } from "../types"
 import { bytesToFile } from "./bytes-to-file"
 
-export const hevyCsvParser: DocumentParser = {
-  id: "parser.hevy_csv",
-  kind: "hevy_csv",
-  label: "Hevy workout CSV",
-  uploadSpec: HEVY_CSV_UPLOAD,
+export const genericCsvParser: DocumentParser = {
+  id: "parser.generic_csv",
+  kind: "generic_csv",
+  label: "Generic CSV",
+  uploadSpec: GENERIC_CSV_UPLOAD,
   execution: "inline",
   maxAttempts: 3,
   async parse(ctx) {
-    const fileName = ctx.file.originalFilename?.trim() || "hevy.csv"
+    const fileName = ctx.file.originalFilename?.trim() || "export.csv"
     const file = bytesToFile(ctx.bytes, fileName, "text/csv")
-    const importer = new HevyImporter()
+    const importer = new CSVImporter()
     const api = await importer.parseUpload(file)
 
     return {

@@ -2,18 +2,26 @@
  * Client-safe import upload helpers.
  * These modules must never import parsing libraries (pdfjs, sax, fflate, etc.).
  *
- * Blood PDFs upload browser → Supabase Storage (never through Vercel).
- * Other sources may still use /api/import/* multipart until migrated.
+ * Document kinds with an uploadSpec use the generic ingestion spine:
+ *   browser → Storage → user_files → ingest_runs → /api/ingest/process
  */
 
 import { createClientOrNull } from "@/lib/supabase/client"
+import { startDocumentIngest } from "@/lib/ingestion/client/start-document-ingest"
+import { documentKindForSource } from "@/lib/ingestion/source-map"
+import {
+  APPLE_HEALTH_UPLOAD,
+  BLOOD_LAB_PDF_UPLOAD,
+  GENERIC_CSV_UPLOAD,
+  HEVY_CSV_UPLOAD,
+  type IngestUploadSpec,
+} from "@/lib/importers/storage/types"
+import type { DocumentKind } from "@/lib/ingestion/document-kind"
 
 import type { ImportPreview } from "./ImportResult"
 import type { ParsedImportData, ValidationResult } from "./Importer"
 import type { ImportProfileToggles } from "./apple-health/import-profile"
 import type { DataSourceId } from "./sources"
-import { BLOOD_LAB_PDF_UPLOAD } from "./storage/types"
-import { uploadIngestDocument } from "./storage/upload-ingest-document"
 
 export interface ClientImportApiResponse {
   success: boolean
@@ -40,15 +48,20 @@ const SOURCE_ENDPOINTS: Partial<Record<DataSourceId, string>> = {
   csv: "/api/import/csv",
 }
 
-/** Sources that must not send file bytes through Next.js. */
-const STORAGE_DIRECT_SOURCES = new Set<DataSourceId>(["blood-test"])
+/** Upload specs for sources on the Storage ingestion spine. */
+const SOURCE_UPLOAD_SPECS: Partial<Record<DataSourceId, IngestUploadSpec>> = {
+  "blood-test": BLOOD_LAB_PDF_UPLOAD,
+  "apple-health": APPLE_HEALTH_UPLOAD,
+  hevy: HEVY_CSV_UPLOAD,
+  csv: GENERIC_CSV_UPLOAD,
+}
 
 export function getImportEndpoint(sourceId: DataSourceId): string | null {
   return SOURCE_ENDPOINTS[sourceId] ?? null
 }
 
 export function usesDirectStorageUpload(sourceId: DataSourceId): boolean {
-  return STORAGE_DIRECT_SOURCES.has(sourceId)
+  return SOURCE_UPLOAD_SPECS[sourceId] != null
 }
 
 export function extensionAllowed(
@@ -59,26 +72,29 @@ export function extensionAllowed(
     ? `.${fileName.split(".").pop()!.toLowerCase()}`
     : ""
   return acceptedExtensions
-    .map((ext) => (ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`))
+    .map((ext) =>
+      ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`
+    )
     .includes(extension)
 }
 
-async function parseBloodTestFromStorage(
-  fileId: string,
-  ingestRunId: string
-): Promise<ClientImportApiResponse> {
-  const response = await fetch("/api/import/blood-test", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fileId, ingestRunId }),
-  })
-
-  return (await response.json()) as ClientImportApiResponse
-}
-
-async function uploadBloodTestViaStorage(
+async function uploadViaIngestionSpine(
+  sourceId: DataSourceId,
   file: File
 ): Promise<ClientImportApiResponse> {
+  const spec = SOURCE_UPLOAD_SPECS[sourceId]
+  const kind = documentKindForSource(sourceId) as DocumentKind | null
+  if (!spec || !kind) {
+    return {
+      success: false,
+      preview: null,
+      warnings: [],
+      diagnostics: null,
+      error: "No ingestion upload spec for this source.",
+      payload: null,
+    }
+  }
+
   const supabase = createClientOrNull()
   if (!supabase) {
     return {
@@ -87,19 +103,29 @@ async function uploadBloodTestViaStorage(
       warnings: [],
       diagnostics: null,
       error:
-        "Geoffit Cloud is not configured. Add Supabase env vars to upload lab PDFs.",
+        "Geoffit Cloud is not configured. Add Supabase env vars to upload documents.",
       payload: null,
     }
   }
 
   try {
-    const uploaded = await uploadIngestDocument({
+    const started = await startDocumentIngest({
       supabase,
       file,
-      spec: BLOOD_LAB_PDF_UPLOAD,
+      uploadSpec: spec,
+      documentKind: kind,
     })
-
-    return await parseBloodTestFromStorage(uploaded.file.id, uploaded.ingestRunId)
+    if (!started.api) {
+      return {
+        success: false,
+        preview: null,
+        warnings: [],
+        diagnostics: { ingestRunId: started.ingestRunId, queued: true },
+        error: "Ingest job queued; waiting for background processor.",
+        payload: null,
+      }
+    }
+    return started.api
   } catch (error) {
     return {
       success: false,
@@ -109,7 +135,7 @@ async function uploadBloodTestViaStorage(
       error:
         error instanceof Error
           ? error.message
-          : "Failed to upload blood-test PDF to Storage.",
+          : "Failed to upload document to Storage.",
       payload: null,
     }
   }
@@ -129,7 +155,7 @@ export async function uploadImportFiles(
   options: { profile?: ImportProfileToggles } = {}
 ): Promise<ClientImportApiResponse> {
   const endpoint = getImportEndpoint(sourceId)
-  if (!endpoint) {
+  if (!endpoint && !usesDirectStorageUpload(sourceId)) {
     return {
       success: false,
       preview: null,
@@ -151,7 +177,6 @@ export async function uploadImportFiles(
     }
   }
 
-  // Production path: browser → Supabase Storage → parse-by-id (no file proxy).
   if (usesDirectStorageUpload(sourceId)) {
     if (files.length !== 1) {
       return {
@@ -159,11 +184,11 @@ export async function uploadImportFiles(
         preview: null,
         warnings: [],
         diagnostics: null,
-        error: "Blood-test import accepts one PDF at a time.",
+        error: "This import accepts one file at a time via Storage.",
         payload: null,
       }
     }
-    return uploadBloodTestViaStorage(files[0]!)
+    return uploadViaIngestionSpine(sourceId, files[0]!)
   }
 
   const form = new FormData()
@@ -177,13 +202,12 @@ export async function uploadImportFiles(
     form.append("profile", JSON.stringify(options.profile))
   }
 
-  const response = await fetch(endpoint, {
+  const response = await fetch(endpoint!, {
     method: "POST",
     body: form,
   })
 
-  const payload = (await response.json()) as ClientImportApiResponse
-  return payload
+  return (await response.json()) as ClientImportApiResponse
 }
 
 export function toClientImportPreview(

@@ -13,6 +13,7 @@ import {
   ScanLine,
   Settings,
   Sparkles,
+  UserRound,
   TrendingUp,
   Utensils,
   type LucideIcon,
@@ -118,7 +119,7 @@ export const navSections: NavSection[] = [
   {
     label: "Overview",
     items: [
-      { label: "Mission Control", href: "/", icon: LayoutDashboard },
+      { label: "Mission Control", href: "/mission-control", icon: LayoutDashboard },
       { label: "Weekly Review", href: "/weekly-review", icon: NotebookPen },
     ],
   },
@@ -148,7 +149,10 @@ export const navSections: NavSection[] = [
   },
   {
     label: "Settings",
-    items: [{ label: "Settings", href: "/settings", icon: Settings }],
+    items: [
+      { label: "Settings", href: "/settings", icon: Settings },
+      { label: "Account", href: "/account", icon: UserRound },
+    ],
   },
 ]
 

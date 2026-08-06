@@ -13,18 +13,58 @@ import { TreatmentAlertsSection } from "@/components/dashboard/mission-control/t
 import { WeeklyReviewBrief } from "@/components/dashboard/weekly-review-brief"
 import { EmptyState } from "@/components/ui/empty-state"
 import { MorningBrief } from "@/components/ui/morning-brief"
+import { useProfile } from "@/hooks/auth"
 import {
   useMissionControl,
   type McTimeRange,
 } from "@/lib/health/analytics"
+import { buildWelcomeBrief } from "@/lib/platform/welcome-brief"
 
 export function MissionControl() {
   const [bodyRange, setBodyRange] = useState<McTimeRange>("90d")
   const view = useMissionControl(bodyRange)
+  const { greetingName } = useProfile()
+
+  const weightSeries = view.bodyComposition.series.find((s) => s.id === "weight")
+  const weightPoints = weightSeries?.points ?? []
+  const first = weightPoints[0]?.value
+  const last = weightPoints[weightPoints.length - 1]?.value
+  const weightDeltaLabel =
+    typeof first === "number" &&
+    typeof last === "number" &&
+    weightPoints.length > 1
+      ? last < first
+        ? `You've lost ${(first - last).toFixed(1)}kg over this range.`
+        : last > first
+          ? `Weight is up ${(last - first).toFixed(1)}kg over this range.`
+          : null
+      : null
+
+  const sleepCard = view.recovery.find((card) => /sleep/i.test(card.label))
+  const sleepDeltaLabel = sleepCard?.trendDisplay
+    ? `Sleep ${sleepCard.trendDisplay}.`
+    : null
+
+  const trainingCard = view.performance[0]
+  const priorityLabel = trainingCard?.label ?? null
+
+  const welcome = buildWelcomeBrief({
+    name: greetingName,
+    bodyFromAnalytics: view.morningBrief.body,
+    hasData: view.hasData,
+    weightDeltaLabel,
+    sleepDeltaLabel,
+    priorityLabel,
+    medicationLabel: null,
+  })
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[1280px] flex-col gap-20 px-6 py-12 lg:gap-24 lg:px-10 lg:py-14">
-      <MorningBrief {...view.morningBrief} />
+    <div className="mx-auto flex min-h-full w-full max-w-[1280px] flex-col gap-20 px-6 py-12 pb-24 lg:gap-24 lg:px-10 lg:py-14 md:pb-14">
+      <MorningBrief
+        greeting={welcome.greeting}
+        name={welcome.name}
+        lines={welcome.lines}
+      />
 
       <WeeklyReviewBrief />
 

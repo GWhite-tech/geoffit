@@ -4,6 +4,7 @@ import { useState } from "react"
 
 import { SettingsNav } from "@/components/settings/settings-nav"
 import { SettingsPanel } from "@/components/settings/settings-panel"
+import { SETTINGS_CATEGORIES } from "@/lib/settings"
 import {
   useActiveSettingsCategory,
   useSettingsBootstrap,
@@ -35,26 +36,15 @@ export function SettingsWorkspace() {
           <select
             value={category}
             onChange={(event) =>
-              setCategory(
-                event.target.value as typeof category
-              )
+              setCategory(event.target.value as typeof category)
             }
             className="h-10 w-full rounded-xl border border-border/40 bg-card/30 px-3 text-[14px] text-foreground"
           >
-            {/* Categories mirrored for mobile */}
-            <option value="general">General</option>
-            <option value="profile">Profile</option>
-            <option value="health_profile">Health Profile</option>
-            <option value="goals">Goals</option>
-            <option value="data_sources">Data Sources</option>
-            <option value="integrations">Integrations</option>
-            <option value="treatments">Treatments</option>
-            <option value="notifications">Notifications</option>
-            <option value="privacy">Privacy & Security</option>
-            <option value="ai_coach">AI Coach</option>
-            <option value="appearance">Appearance</option>
-            <option value="advanced">Advanced</option>
-            <option value="about">About</option>
+            {SETTINGS_CATEGORIES.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
           </select>
           <input
             value={search}

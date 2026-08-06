@@ -1,21 +1,26 @@
 /**
  * Settings preference model — registry-driven, multi-user ready.
+ * Primary account-centre categories are listed first.
  */
 
 export type SettingsCategoryId =
-  | "general"
   | "profile"
-  | "health_profile"
-  | "goals"
-  | "data_sources"
-  | "integrations"
-  | "treatments"
+  | "appearance"
+  | "preferences"
+  | "health_sources"
+  | "cloud"
   | "notifications"
   | "privacy"
+  | "health_profile"
+  | "goals"
+  | "treatments"
   | "ai_coach"
-  | "appearance"
   | "advanced"
   | "about"
+  /** Legacy aliases kept for registry compatibility */
+  | "general"
+  | "data_sources"
+  | "integrations"
 
 export type PreferenceControl =
   | "text"
@@ -33,12 +38,10 @@ export type PreferenceValue = string | number | boolean | null
 export type PreferenceDefinition = {
   id: string
   category: SettingsCategoryId
-  /** Section heading within the category panel */
   section: string
   label: string
   description?: string
   control: PreferenceControl
-  /** Search keywords beyond label/description */
   keywords: string[]
   defaultValue: PreferenceValue
   options?: Array<{ value: string; label: string }>
@@ -46,12 +49,9 @@ export type PreferenceDefinition = {
   min?: number
   max?: number
   step?: number
-  /** Future: user | family | coach | enterprise scopes */
   scope: "user" | "workspace"
-  /** Special handling — not a simple persisted field */
   kind?: "preference" | "action" | "computed"
   actionId?: string
-  /** Availability for future features */
   availability?: "available" | "coming_soon"
 }
 

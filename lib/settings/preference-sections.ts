@@ -1,15 +1,41 @@
 import type { SettingsCategory, SettingsCategoryId } from "./types"
 
+/** Primary account-centre navigation */
 export const SETTINGS_CATEGORIES: SettingsCategory[] = [
-  {
-    id: "general",
-    label: "General",
-    description: "Language, region, and measurement defaults.",
-  },
   {
     id: "profile",
     label: "Profile",
-    description: "Who you are in Geoffit.",
+    description: "Avatar, name, email, timezone, and language.",
+  },
+  {
+    id: "appearance",
+    label: "Appearance",
+    description: "Theme, accent colour, density, and type scale.",
+  },
+  {
+    id: "preferences",
+    label: "Preferences",
+    description: "Units, dates, dashboard layout, and landing page.",
+  },
+  {
+    id: "health_sources",
+    label: "Health Sources",
+    description: "Connections that feed your health operating system.",
+  },
+  {
+    id: "cloud",
+    label: "Cloud",
+    description: "Supabase status, offline cache, and migration readiness.",
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    description: "Push, email, and reminder categories.",
+  },
+  {
+    id: "privacy",
+    label: "Privacy & Security",
+    description: "Password, sessions, export, and account controls.",
   },
   {
     id: "health_profile",
@@ -22,39 +48,9 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
     description: "Targets used across Progress, Nutrition, and Coach.",
   },
   {
-    id: "data_sources",
-    label: "Data Sources",
-    description: "Everything feeding your health operating system.",
-  },
-  {
-    id: "integrations",
-    label: "Integrations",
-    description: "Future connectors and services.",
-  },
-  {
-    id: "treatments",
-    label: "Treatments",
-    description: "Defaults for prescriptions, peptides, and inventory.",
-  },
-  {
-    id: "notifications",
-    label: "Notifications",
-    description: "What Geoffit may surface, and how.",
-  },
-  {
-    id: "privacy",
-    label: "Privacy & Security",
-    description: "Access, export, and account controls.",
-  },
-  {
     id: "ai_coach",
     label: "AI Coach",
     description: "Memory, style, and proactive coaching.",
-  },
-  {
-    id: "appearance",
-    label: "Appearance",
-    description: "Theme, density, and motion.",
   },
   {
     id: "advanced",

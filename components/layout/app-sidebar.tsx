@@ -16,7 +16,9 @@ import { cn } from "@/lib/utils"
 
 function isActivePath(pathname: string, href: string): boolean {
   if (href === "#") return false
-  if (href === "/") return pathname === "/"
+  if (href === "/" || href === "/mission-control") {
+    return pathname === "/" || pathname === "/mission-control"
+  }
   return pathname === href || pathname.startsWith(`${href}/`)
 }
 
@@ -56,7 +58,7 @@ export function AppSidebar() {
     <Sidebar collapsible="none" className="bg-background">
       <SidebarHeader className="px-5 py-10">
         <Link
-          href="/"
+          href="/mission-control"
           className="px-2 text-sm font-semibold tracking-tight text-foreground"
         >
           Geoffit

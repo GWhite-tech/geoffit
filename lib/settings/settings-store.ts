@@ -23,7 +23,7 @@ type PersistedShape = {
 export class SettingsStore {
   private userId = "local"
   private values: Record<string, PreferenceValue> = defaultPreferenceValues()
-  private activeCategory: SettingsCategoryId = "general"
+  private activeCategory: SettingsCategoryId = "profile"
   private listeners = new Set<Listener>()
   private hydrated = false
 

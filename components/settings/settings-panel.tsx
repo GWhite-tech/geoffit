@@ -1,10 +1,15 @@
 "use client"
 
-import { AdvancedPanel } from "@/components/settings/advanced-panel"
 import { AboutPanel } from "@/components/settings/about-panel"
-import { DataSourcesPanel } from "@/components/settings/data-sources-panel"
-import { IntegrationsPanel } from "@/components/settings/integrations-panel"
+import { AdvancedPanel } from "@/components/settings/advanced-panel"
+import { AppearanceSettingsPanel } from "@/components/settings/appearance-settings-panel"
+import { CloudPanel } from "@/components/settings/cloud-panel"
+import { HealthSourcesPanel } from "@/components/settings/health-sources-panel"
+import { NotificationsSettingsPanel } from "@/components/settings/notifications-settings-panel"
 import { PreferenceField } from "@/components/settings/preference-field"
+import { PreferencesSettingsPanel } from "@/components/settings/preferences-settings-panel"
+import { PrivacySettingsPanel } from "@/components/settings/privacy-settings-panel"
+import { ProfileSettingsPanel } from "@/components/settings/profile-settings-panel"
 import {
   getCategory,
   preferencesForCategory,
@@ -49,10 +54,22 @@ export function SettingsPanel({
         ) : null}
       </header>
 
-      {category === "data_sources" ? (
-        <DataSourcesPanel />
-      ) : category === "integrations" ? (
-        <IntegrationsPanel />
+      {category === "profile" ? (
+        <ProfileSettingsPanel />
+      ) : category === "appearance" ? (
+        <AppearanceSettingsPanel />
+      ) : category === "preferences" || category === "general" ? (
+        <PreferencesSettingsPanel />
+      ) : category === "health_sources" ||
+        category === "data_sources" ||
+        category === "integrations" ? (
+        <HealthSourcesPanel />
+      ) : category === "cloud" ? (
+        <CloudPanel />
+      ) : category === "notifications" ? (
+        <NotificationsSettingsPanel />
+      ) : category === "privacy" ? (
+        <PrivacySettingsPanel />
       ) : category === "advanced" ? (
         <AdvancedPanel />
       ) : category === "about" ? (
@@ -95,49 +112,48 @@ function SearchResults({
   query: string
   onJumpCategory: (id: SettingsCategoryId) => void
 }) {
-  return (
-    <div className="mx-auto w-full max-w-[760px] px-6 py-10 lg:px-12">
-      <header className="mb-10">
-        <h1 className="text-[32px] font-semibold tracking-tight text-foreground">
-          Search
-        </h1>
-        <p className="mt-3 text-[15px] text-muted-foreground">
-          {hits.length} result{hits.length === 1 ? "" : "s"} for “{query}”
-        </p>
-      </header>
-
-      {hits.length === 0 ? (
+  if (!hits.length) {
+    return (
+      <div className="mx-auto max-w-[760px] px-6 py-10">
         <p className="text-[15px] text-muted-foreground">
-          No settings match that query.
+          No settings match “{query}”.
         </p>
-      ) : (
-        <ul className="divide-y divide-border/25">
-          {hits.map((hit) => (
-            <li key={hit.preference.id} className="py-5">
-              <button
-                type="button"
-                onClick={() => onJumpCategory(hit.preference.category)}
-                className="mb-3 text-left text-[12px] tracking-[0.12em] text-muted-foreground/70 uppercase transition-colors hover:text-foreground"
-              >
-                {hit.categoryLabel} · {hit.preference.section}
-              </button>
-              <PreferenceField preference={hit.preference} />
-            </li>
-          ))}
-        </ul>
-      )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-[760px] space-y-4 px-6 py-10">
+      <p className="text-[14px] text-muted-foreground">
+        {hits.length} result{hits.length === 1 ? "" : "s"} for “{query}”
+      </p>
+      <div className="divide-y divide-border/25">
+        {hits.map(({ preference }) => (
+          <button
+            key={preference.id}
+            type="button"
+            onClick={() => onJumpCategory(preference.category)}
+            className="flex w-full flex-col items-start gap-1 py-4 text-left"
+          >
+            <span className="text-[15px] text-foreground">{preference.label}</span>
+            <span className="text-[13px] text-muted-foreground">
+              {preference.category.replaceAll("_", " ")}
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
 
-function groupBySection(
-  items: PreferenceDefinition[]
-): Record<string, PreferenceDefinition[]> {
-  const map: Record<string, PreferenceDefinition[]> = {}
-  for (const item of items) {
-    const list = map[item.section] ?? []
-    list.push(item)
-    map[item.section] = list
-  }
-  return map
+function groupBySection(preferences: PreferenceDefinition[]) {
+  return preferences.reduce<Record<string, PreferenceDefinition[]>>(
+    (acc, preference) => {
+      const key = preference.section
+      acc[key] = acc[key] ?? []
+      acc[key].push(preference)
+      return acc
+    },
+    {}
+  )
 }

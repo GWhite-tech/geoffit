@@ -1,5 +1,10 @@
 import "server-only"
 
+import { writeDomainReplayPersist } from "@/lib/health/bootstrap/domain-replay/write-persist"
+import {
+  readDomainReplayPersistMeta,
+  type DomainReplayPersistMeta,
+} from "@/lib/health/bootstrap/domain-replay/meta"
 import {
   BLOOD_LAB_PDF_PARSER_NAME,
   BLOOD_LAB_PDF_PARSER_VERSION,
@@ -312,6 +317,7 @@ async function processIngestRunBody(
 
   let facts = null
   let timeline = null
+  let domainReplayPersist: DomainReplayPersistMeta | null = null
 
   const incomplete =
     parse.success &&
@@ -339,6 +345,32 @@ async function processIngestRunBody(
       logIngestException(error, options.ingestRunId, "writers")
       throw error
     }
+
+    // Temporary bootstrap bridge: stage Blood/Hevy domain objects for replay
+    // (same idea as Apple Health persist batches — no re-parse on new devices).
+    if (
+      options.documentKind === "blood_lab_pdf" ||
+      options.documentKind === "hevy_csv"
+    ) {
+      try {
+        domainReplayPersist = await writeDomainReplayPersist({
+          supabase: options.supabase,
+          bucket: primary.bucket,
+          userId: options.userId,
+          ingestRunId: options.ingestRunId,
+          kind: options.documentKind,
+          payload: parse.payload,
+          existing: readDomainReplayPersistMeta(
+            prior.stats,
+            null,
+            options.documentKind
+          ),
+        })
+      } catch (error) {
+        logIngestException(error, options.ingestRunId, "domain_replay_persist")
+        throw error
+      }
+    }
   }
 
   const status = parse.success
@@ -346,10 +378,30 @@ async function processIngestRunBody(
       ? "partial"
       : "succeeded"
     : "failed"
-  const diagnosticsJson =
+  const baseDiagnostics =
     parse.diagnostics && typeof parse.diagnostics === "object"
       ? (parse.diagnostics as Record<string, unknown>)
       : null
+
+  // Never clear an existing Blood/Hevy replay pointer on failed/empty persist.
+  const priorDomainReplay =
+    options.documentKind === "blood_lab_pdf" ||
+    options.documentKind === "hevy_csv"
+      ? readDomainReplayPersistMeta(
+          prior.stats,
+          null,
+          options.documentKind
+        )
+      : null
+  const effectiveDomainReplay = domainReplayPersist ?? priorDomainReplay
+
+  const diagnosticsJson =
+    effectiveDomainReplay != null
+      ? {
+          ...(baseDiagnostics ?? {}),
+          domain_replay_persist: effectiveDomainReplay,
+        }
+      : baseDiagnostics
 
   const persistMeta =
     diagnosticsJson &&
@@ -377,6 +429,14 @@ async function processIngestRunBody(
       parser_id: parser.id,
       content_fingerprint: contentFingerprint,
       apple_health_persist: persistMeta,
+      blood_persist:
+        options.documentKind === "blood_lab_pdf"
+          ? (domainReplayPersist ?? prior.stats.blood_persist ?? null)
+          : (prior.stats.blood_persist ?? null),
+      hevy_persist:
+        options.documentKind === "hevy_csv"
+          ? (domainReplayPersist ?? prior.stats.hevy_persist ?? null)
+          : (prior.stats.hevy_persist ?? null),
       // Keep a compact pointer in stats; full payload lives on diagnostics_json.
       diagnostics_summary: diagnosticsJson
         ? {
@@ -387,6 +447,8 @@ async function processIngestRunBody(
             biomarkers_found: diagnosticsJson.biomarkers_found ?? null,
             incomplete: diagnosticsJson.incomplete ?? null,
             records_mapped: diagnosticsJson.recordsMapped ?? null,
+            domain_replay_kind: effectiveDomainReplay?.kind ?? null,
+            domain_replay_items: effectiveDomainReplay?.itemCount ?? null,
           }
         : null,
       facts_written: facts?.written ?? 0,

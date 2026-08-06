@@ -76,20 +76,11 @@ export function useTraining(): TrainingView {
   }, [])
 
   return useMemo(() => {
-    if (!hydrated) {
-      return buildTrainingView({
-        records: [],
-        hevyWorkouts: [],
-        range,
-        stepRange,
-        strengthMetric,
-        selectedExercise,
-        goals,
-      })
-    }
+    // Hevy lives in WorkoutStore (localStorage) — do not gate it on HealthStore IDB hydrate.
+    const hevyWorkouts = getWorkoutStore().getAll()
     return buildTrainingView({
-      records: getHealthStore().getAll(),
-      hevyWorkouts: getWorkoutStore().getAll(),
+      records: hydrated ? getHealthStore().getAll() : [],
+      hevyWorkouts,
       range,
       stepRange,
       strengthMetric,

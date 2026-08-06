@@ -11,6 +11,7 @@ import {
 
 import { useTheme } from "@/components/theme/theme-provider"
 import { useUser } from "@/hooks/auth"
+import { scheduleCloudBootstrap } from "@/lib/health/bootstrap"
 import {
   ensureUserPreferences,
   getPreferencesStore,
@@ -56,6 +57,10 @@ export function PreferencesProvider({
       .catch(() => {
         // Table may not exist yet — local defaults remain.
       })
+
+    // Temporary multi-device bridge (async, non-blocking).
+    // Remove when cloud-first hydration lands — see lib/health/bootstrap.
+    scheduleCloudBootstrap(user.id, supabase)
   }, [user, store, setTheme])
 
   const updatePreferences = useCallback(

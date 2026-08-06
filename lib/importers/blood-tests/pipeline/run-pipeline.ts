@@ -1,6 +1,7 @@
 import type { BloodMarker, BloodTest } from "@/lib/domain/blood"
 import type { ImportPreview } from "../../ImportResult"
-import { buildBloodTest } from "../BloodMarkerParser"
+import { buildBloodTest, emptyBiomarkerParseInstrumentation } from "../BloodMarkerParser"
+import type { BloodMarkerParseResult } from "../BloodMarkerParser"
 import { buildBloodTestPreview } from "../BloodTestPreview"
 import type { BloodManualEntryMarker } from "../manual-entry"
 import {
@@ -324,14 +325,16 @@ export async function runBloodPdfPipeline(
     panelName: "Blood Test",
   })
   let biomarkerParsing = runBiomarkerParsingStage(extractedText)
+  const emptyParseResult: BloodMarkerParseResult = {
+    header: { provider: "Unknown", panelName: "Blood Test" },
+    markers: [],
+    manualEntryRequired: [],
+    warnings: [],
+    rawTextLength: extractedText.length,
+    instrumentation: emptyBiomarkerParseInstrumentation(),
+  }
   let validation = runValidationStage(
-    biomarkerParsing.data ?? {
-      header: { provider: "Unknown", panelName: "Blood Test" },
-      markers: [],
-      manualEntryRequired: [],
-      warnings: [],
-      rawTextLength: extractedText.length,
-    }
+    biomarkerParsing.data ?? emptyParseResult
   )
 
   if (biomarkerParsing.data) {

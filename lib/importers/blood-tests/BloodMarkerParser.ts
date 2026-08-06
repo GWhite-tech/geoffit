@@ -49,6 +49,16 @@ export type BiomarkerParseInstrumentation = {
   rowAttempts: BiomarkerRowAttempt[]
 }
 
+/** Empty instrumentation for fallback / skipped parse results. */
+export function emptyBiomarkerParseInstrumentation(): BiomarkerParseInstrumentation {
+  return {
+    candidateRows: 0,
+    matchedRows: 0,
+    ignoredRows: 0,
+    rowAttempts: [],
+  }
+}
+
 function canonicalizeUnitToken(line: string): string {
   return line
     .trim()

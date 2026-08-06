@@ -97,7 +97,12 @@ export async function updateIngestRun(
   const patch: Record<string, unknown> = {
     status: input.status,
   }
-  if (input.started) patch.started_at = new Date().toISOString()
+  if (input.started) {
+    // Restarting a prior succeeded/failed run must clear finished_at first —
+    // otherwise new started_at > old finished_at trips ingest_runs_finished_after_started.
+    patch.started_at = new Date().toISOString()
+    patch.finished_at = null
+  }
   if (input.finished) patch.finished_at = new Date().toISOString()
   if (input.errorSummary !== undefined) {
     patch.error_summary = input.errorSummary

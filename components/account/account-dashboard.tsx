@@ -152,7 +152,7 @@ export function AccountDashboard() {
             href="/settings?category=profile"
             icon={UserRound}
             label="Profile"
-            value={preferences?.unit_system === "imperial" ? "Imperial" : "Metric"}
+            value={preferences?.units === "imperial" ? "Imperial" : "Metric"}
           />
           <Row
             href="/settings"

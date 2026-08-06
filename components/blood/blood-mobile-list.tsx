@@ -72,7 +72,7 @@ export function BloodMobileList() {
                     <BiomarkerCell
                       key={biomarker.id}
                       href={`/blood/${biomarker.id}`}
-                      name={biomarker.shortName || biomarker.name}
+                      name={biomarker.displayName}
                       value={hasData ? value : "No data"}
                       status={latest?.status.label ?? null}
                       statusTone={statusToneFromColour(latest?.status.colour)}

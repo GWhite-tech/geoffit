@@ -42,3 +42,4 @@ Start with [`01-overview.md`](./architecture/database/01-overview.md).
 | [28-preference-ownership](./architecture/database/28-preference-ownership.md) | Who owns which preferences |
 | [29-product-principles](./architecture/database/29-product-principles.md) | Product principles |
 | [migrations/phase-1](./architecture/database/migrations/phase-1.md) | Phase 1 SQL apply guide |
+| [migrations/storage-ingest-uploads](./architecture/database/migrations/storage-ingest-uploads.md) | Direct Storage upload pipeline (blood PDFs) |

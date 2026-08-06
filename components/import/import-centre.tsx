@@ -20,6 +20,7 @@ import {
   getImportEndpoint,
   toClientImportPreview,
   uploadImportFiles,
+  usesDirectStorageUpload,
   type ClientImportPreview,
 } from "@/lib/importers/client-upload"
 import type { ImportResult } from "@/lib/importers/ImportResult"
@@ -152,8 +153,11 @@ export function ImportCentre() {
       setStage("progress")
       setProgress(
         createEmptyProgressEvent({
-          message:
-            files.length > 1
+          message: usesDirectStorageUpload(source.id)
+            ? files.length > 1
+              ? `Uploading ${files.length} files to secure storage…`
+              : `Uploading ${source.label} to secure storage…`
+            : files.length > 1
               ? `Uploading ${files.length} ${source.label.toLowerCase()} for OCR…`
               : `Uploading ${source.label} file for server-side parsing…`,
           progress: 18,

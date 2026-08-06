@@ -23,6 +23,14 @@ No public anonymous clinical media.
 
 Always scope first path segment to `user_id` for RLS/Storage policies.
 
+## Direct browser uploads (production)
+
+Large clinical files (lab PDFs ≥ a few MB, Apple Health ZIPs) **must not** transit Vercel/Next.js request bodies.
+
+Pipeline: browser → private bucket (standard or TUS resumable) → `user_files` + `ingest_runs` → lightweight parse API by `fileId`.
+
+See [`migrations/storage-ingest-uploads.md`](./migrations/storage-ingest-uploads.md).
+
 ## Metadata tables
 
 | Concern | Table fields |

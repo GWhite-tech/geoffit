@@ -1,12 +1,19 @@
 /**
  * Client-safe import upload helpers.
  * These modules must never import parsing libraries (pdfjs, sax, fflate, etc.).
+ *
+ * Blood PDFs upload browser → Supabase Storage (never through Vercel).
+ * Other sources may still use /api/import/* multipart until migrated.
  */
+
+import { createClientOrNull } from "@/lib/supabase/client"
 
 import type { ImportPreview } from "./ImportResult"
 import type { ParsedImportData, ValidationResult } from "./Importer"
 import type { ImportProfileToggles } from "./apple-health/import-profile"
 import type { DataSourceId } from "./sources"
+import { BLOOD_LAB_PDF_UPLOAD } from "./storage/types"
+import { uploadIngestDocument } from "./storage/upload-ingest-document"
 
 export interface ClientImportApiResponse {
   success: boolean
@@ -33,8 +40,15 @@ const SOURCE_ENDPOINTS: Partial<Record<DataSourceId, string>> = {
   csv: "/api/import/csv",
 }
 
+/** Sources that must not send file bytes through Next.js. */
+const STORAGE_DIRECT_SOURCES = new Set<DataSourceId>(["blood-test"])
+
 export function getImportEndpoint(sourceId: DataSourceId): string | null {
   return SOURCE_ENDPOINTS[sourceId] ?? null
+}
+
+export function usesDirectStorageUpload(sourceId: DataSourceId): boolean {
+  return STORAGE_DIRECT_SOURCES.has(sourceId)
 }
 
 export function extensionAllowed(
@@ -47,6 +61,58 @@ export function extensionAllowed(
   return acceptedExtensions
     .map((ext) => (ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`))
     .includes(extension)
+}
+
+async function parseBloodTestFromStorage(
+  fileId: string,
+  ingestRunId: string
+): Promise<ClientImportApiResponse> {
+  const response = await fetch("/api/import/blood-test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileId, ingestRunId }),
+  })
+
+  return (await response.json()) as ClientImportApiResponse
+}
+
+async function uploadBloodTestViaStorage(
+  file: File
+): Promise<ClientImportApiResponse> {
+  const supabase = createClientOrNull()
+  if (!supabase) {
+    return {
+      success: false,
+      preview: null,
+      warnings: [],
+      diagnostics: null,
+      error:
+        "Geoffit Cloud is not configured. Add Supabase env vars to upload lab PDFs.",
+      payload: null,
+    }
+  }
+
+  try {
+    const uploaded = await uploadIngestDocument({
+      supabase,
+      file,
+      spec: BLOOD_LAB_PDF_UPLOAD,
+    })
+
+    return await parseBloodTestFromStorage(uploaded.file.id, uploaded.ingestRunId)
+  } catch (error) {
+    return {
+      success: false,
+      preview: null,
+      warnings: [],
+      diagnostics: null,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to upload blood-test PDF to Storage.",
+      payload: null,
+    }
+  }
 }
 
 export async function uploadImportFile(
@@ -83,6 +149,21 @@ export async function uploadImportFiles(
       error: "No files selected.",
       payload: null,
     }
+  }
+
+  // Production path: browser → Supabase Storage → parse-by-id (no file proxy).
+  if (usesDirectStorageUpload(sourceId)) {
+    if (files.length !== 1) {
+      return {
+        success: false,
+        preview: null,
+        warnings: [],
+        diagnostics: null,
+        error: "Blood-test import accepts one PDF at a time.",
+        payload: null,
+      }
+    }
+    return uploadBloodTestViaStorage(files[0]!)
   }
 
   const form = new FormData()

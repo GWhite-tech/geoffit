@@ -33,7 +33,8 @@ export interface BloodTestApiResponse {
 
 /**
  * Blood-test importer — client-safe.
- * PDF parsing happens on the server via /api/import/blood-test.
+ * PDF bytes go browser → Supabase Storage; parsing runs on the server via
+ * POST /api/import/blood-test with { fileId } only (no multipart file body).
  * This class only validates file types and hydrates server results for confirm/persist.
  */
 export class BloodTestImporter extends BaseImporter {
@@ -62,7 +63,7 @@ export class BloodTestImporter extends BaseImporter {
     }
 
     throw new Error(
-      "Blood-test PDFs must be parsed on the server. Upload via /api/import/blood-test."
+      "Blood-test PDFs must upload to Supabase Storage, then parse via /api/import/blood-test."
     )
   }
 
@@ -177,18 +178,19 @@ export class BloodTestImporter extends BaseImporter {
 /** @deprecated Use BloodTestImporter */
 export const NumanBloodTestImporter = BloodTestImporter
 
-/** Upload a PDF to the server blood-test parser. Safari only sends the file. */
+/** Upload a PDF to private Storage, then trigger the server parser by file id. */
 export async function uploadBloodTestPdf(
   file: File
 ): Promise<BloodTestApiResponse> {
-  const form = new FormData()
-  form.append("file", file, file.name)
-
-  const response = await fetch("/api/import/blood-test", {
-    method: "POST",
-    body: form,
-  })
-
-  const payload = (await response.json()) as BloodTestApiResponse
-  return payload
+  const { uploadImportFile } = await import("../client-upload")
+  const api = await uploadImportFile("blood-test", file)
+  return {
+    success: api.success,
+    preview: api.preview,
+    biomarkers: [],
+    warnings: api.warnings,
+    bloodTest:
+      (api.payload?.metadata?.domainBloodTest as BloodTest | undefined) ?? null,
+    error: api.error ?? undefined,
+  }
 }

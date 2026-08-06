@@ -35,6 +35,7 @@ export {
   toClientImportPreview,
   getImportEndpoint,
   extensionAllowed,
+  usesDirectStorageUpload,
 } from "./client-upload"
 export type {
   ClientImportApiResponse,

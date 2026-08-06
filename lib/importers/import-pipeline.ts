@@ -31,7 +31,7 @@ export interface GeneratePreviewOptions {
  * Import pipeline:
  * File → Parse → Validate → Preview → (user confirms) → Persist → ImportResult
  *
- * Blood-test PDFs are parsed on the server (/api/import/blood-test), not here.
+ * Blood-test PDFs upload to Supabase Storage; parsing is triggered by file id.
  */
 export class ImportPipeline {
   private context: ImportContext
@@ -54,9 +54,9 @@ export class ImportPipeline {
 
     if (importer.id === "blood-test") {
       throw new ImportPipelineError(
-        "Blood-test PDFs must be uploaded to /api/import/blood-test. The browser must not parse PDFs.",
+        "Blood-test PDFs must upload to Supabase Storage (see uploadImportFile).",
         [
-          "Blood-test PDFs must be uploaded to /api/import/blood-test. The browser must not parse PDFs.",
+          "Blood-test PDFs must upload to Supabase Storage (see uploadImportFile).",
         ]
       )
     }

@@ -13,6 +13,11 @@ import "server-only"
  * Next/Vercel. We preload the worker bundle onto `globalThis.pdfjsWorker` so
  * that path never dynamic-imports workerSrc. Same Node process; no Worker(),
  * no workerSrc assignment.
+ *
+ * OCR: digital lab PDFs (e.g. Numan) use pdf.js text only. OCR runs only when
+ * selectable text is insufficient, and only via system `tesseract` CLI.
+ * tesseract.js is not used here — its Node worker breaks on Vercel
+ * ("Cannot find module '..'").
  */
 
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
@@ -26,6 +31,8 @@ import {
   Path2D as NodePath2D,
 } from "@napi-rs/canvas"
 
+import { BloodPdfError } from "./errors"
+
 const execFileAsync = promisify(execFile)
 
 export interface PdfExtractResult {
@@ -35,6 +42,7 @@ export interface PdfExtractResult {
   warnings: string[]
 }
 
+/** Enough selectable text to treat the PDF as digital (skip OCR). */
 const MIN_NATIVE_CHARS = 120
 
 type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs")
@@ -80,33 +88,51 @@ export async function extractPdfTextFromBuffer(
   fileName = "upload.pdf"
 ): Promise<PdfExtractResult> {
   const warnings: string[] = []
-  const pdfjs = await loadPdfJs()
 
-  // Plain ArrayBuffer-backed view for pdfjs Node expectations.
-  // Do not set GlobalWorkerOptions.workerSrc — handler is on globalThis.pdfjsWorker.
-  const pdfBytes = Uint8Array.from(data)
+  let pdfjs: PdfJsModule
+  let doc: Awaited<ReturnType<PdfJsModule["getDocument"]>["promise"]>
 
-  const doc = await pdfjs.getDocument({
-    data: pdfBytes,
-    useSystemFonts: true,
-    disableFontFace: true,
-  }).promise
+  try {
+    pdfjs = await loadPdfJs()
+    const pdfBytes = Uint8Array.from(data)
+    doc = await pdfjs.getDocument({
+      data: pdfBytes,
+      useSystemFonts: true,
+      disableFontFace: true,
+    }).promise
+  } catch (error) {
+    throw new BloodPdfError(
+      "pdf_text_failed",
+      "PDF text extraction failed.",
+      error
+    )
+  }
 
   const pageCount = doc.numPages
   const nativePages: string[] = []
   let nativeChars = 0
 
-  for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-    const page = await doc.getPage(pageNum)
-    const content = await page.getTextContent()
-    const lines = groupTextItems(content.items)
-    nativePages.push(lines.join("\n"))
-    nativeChars += lines.join("").length
+  try {
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      const page = await doc.getPage(pageNum)
+      const content = await page.getTextContent()
+      const lines = groupTextItems(content.items)
+      nativePages.push(lines.join("\n"))
+      nativeChars += lines.join("").length
+    }
+  } catch (error) {
+    throw new BloodPdfError(
+      "pdf_text_failed",
+      "PDF text extraction failed.",
+      error
+    )
   }
 
   const nativeText = nativePages.join("\n\n")
 
-  if (nativeChars >= MIN_NATIVE_CHARS && hasBiomarkerSignal(nativeText)) {
+  // Digital PDFs (Numan etc.): trust selectable text — do not require a
+  // biomarker regex hit before skipping OCR. Let the marker parser decide.
+  if (nativeChars >= MIN_NATIVE_CHARS || hasBiomarkerSignal(nativeText)) {
     return {
       text: nativeText,
       pageCount,
@@ -116,13 +142,19 @@ export async function extractPdfTextFromBuffer(
   }
 
   warnings.push(
-    nativeChars < MIN_NATIVE_CHARS
-      ? "PDF has little selectable text — running server OCR on scanned pages."
-      : "Native text did not look like a lab table — running server OCR."
+    "PDF has little selectable text — attempting system OCR for scanned pages."
   )
 
   const ocrPages: string[] = []
+  let ocrSucceeded = false
+  let ocrUnavailable = false
+
   for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+    if (ocrUnavailable) {
+      ocrPages.push("")
+      continue
+    }
+
     const page = await doc.getPage(pageNum)
     const image = await extractLargestPageImage(page, pdfjs.OPS.paintImageXObject)
     if (!image) {
@@ -132,9 +164,22 @@ export async function extractPdfTextFromBuffer(
     }
 
     try {
-      const text = await ocrRgbImage(image.width, image.height, image.data)
+      const text = await ocrRgbImageWithSystemTesseract(
+        image.width,
+        image.height,
+        image.data
+      )
       ocrPages.push(text)
+      if (text.trim()) ocrSucceeded = true
     } catch (error) {
+      if (error instanceof BloodPdfError && error.code === "ocr_unavailable") {
+        ocrUnavailable = true
+        warnings.push(
+          "OCR is unavailable on this server — scanned pages could not be analysed. Continuing with extractable PDF text."
+        )
+        ocrPages.push("")
+        continue
+      }
       warnings.push(
         `Page ${pageNum}: OCR failed (${
           error instanceof Error ? error.message : String(error)
@@ -145,16 +190,29 @@ export async function extractPdfTextFromBuffer(
   }
 
   const ocrText = ocrPages.join("\n\n")
-  const method = nativeChars > 40 ? ("hybrid" as const) : ("ocr" as const)
+  const text = [nativeText, ocrText].filter((t) => t.trim()).join("\n\n")
+  const method: PdfExtractResult["method"] = ocrSucceeded
+    ? nativeChars > 0
+      ? "hybrid"
+      : "ocr"
+    : "text"
 
-  if (!ocrText.trim() && !nativeText.trim()) {
+  if (!text.trim()) {
     warnings.push(
       `Could not extract text from ${fileName}. Ensure the PDF is readable.`
+    )
+  } else if (
+    !ocrSucceeded &&
+    !ocrUnavailable &&
+    nativeChars < MIN_NATIVE_CHARS
+  ) {
+    warnings.push(
+      "Scanned pages could not be analysed; only extractable PDF text was used."
     )
   }
 
   return {
-    text: method === "hybrid" ? `${nativeText}\n\n${ocrText}` : ocrText,
+    text,
     pageCount,
     method,
     warnings,
@@ -164,7 +222,7 @@ export async function extractPdfTextFromBuffer(
 function hasBiomarkerSignal(text: string): boolean {
   return (
     /Identifier\s+Observation/i.test(text) ||
-    /\b(HbA1c|Testosterone|LDL|HDL|Triglycerides|TSH)\b/i.test(text)
+    /\b(HbA1c|Testosterone|LDL|HDL|Triglycerides|TSH|Numan)\b/i.test(text)
   )
 }
 
@@ -272,7 +330,10 @@ async function resolveImageObject(
   })
 }
 
-async function ocrRgbImage(
+/**
+ * System tesseract only — no tesseract.js (broken on Vercel Node).
+ */
+async function ocrRgbImageWithSystemTesseract(
   width: number,
   height: number,
   data: Uint8ClampedArray
@@ -284,7 +345,6 @@ async function ocrRgbImage(
 
   try {
     await writeFile(imagePath, bmp)
-
     try {
       const { stdout } = await execFileAsync(
         "tesseract",
@@ -292,16 +352,12 @@ async function ocrRgbImage(
         { maxBuffer: 10 * 1024 * 1024 }
       )
       return stdout
-    } catch {
-      const { createWorker, PSM } = await import("tesseract.js")
-      const worker = await createWorker("eng")
-      try {
-        await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_COLUMN })
-        const result = await worker.recognize(imagePath)
-        return result.data.text
-      } finally {
-        await worker.terminate()
-      }
+    } catch (error) {
+      throw new BloodPdfError(
+        "ocr_unavailable",
+        "OCR worker failed to initialise.",
+        error
+      )
     }
   } finally {
     await rm(dir, { recursive: true, force: true })

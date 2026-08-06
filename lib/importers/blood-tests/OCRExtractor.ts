@@ -25,7 +25,7 @@ export interface OCRExtractResult {
   /** Mean word confidence in 0–1. */
   confidence: number
   warnings: string[]
-  method: "tesseract-cli" | "tesseract-js" | "none"
+  method: "tesseract-cli" | "none"
   sourceFileName: string
 }
 
@@ -174,30 +174,10 @@ async function ocrWithCli(imagePath: string): Promise<{
   }
 }
 
-async function ocrWithJs(imagePath: string): Promise<{
-  text: string
-  confidence: number
-}> {
-  const { createWorker, PSM } = await import("tesseract.js")
-  const worker = await createWorker("eng")
-  try {
-    await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_BLOCK })
-    const result = await worker.recognize(imagePath)
-    const conf =
-      typeof result.data.confidence === "number"
-        ? result.data.confidence / 100
-        : 0.65
-    return {
-      text: (result.data.text ?? "").trim(),
-      confidence: Math.max(0, Math.min(1, conf)),
-    }
-  } finally {
-    await worker.terminate()
-  }
-}
-
 /**
- * Default OCR implementation: system tesseract → tesseract.js fallback.
+ * System `tesseract` CLI only.
+ * tesseract.js is intentionally unused — its Node worker fails on Vercel
+ * ("Cannot find module '..'").
  */
 export class TesseractOCRExtractor implements OCRExtractor {
   async extract(input: OCRExtractInput): Promise<OCRExtractResult> {
@@ -229,21 +209,21 @@ export class TesseractOCRExtractor implements OCRExtractor {
           sourceFileName: input.fileName,
         }
       } catch (cliError) {
-        warnings.push(
-          `System tesseract unavailable (${
-            cliError instanceof Error ? cliError.message : String(cliError)
-          }) — using tesseract.js.`
+        console.error(
+          "[OCRExtractor] system tesseract unavailable",
+          cliError
         )
-        const js = await ocrWithJs(raster.path)
+        warnings.push("OCR worker failed to initialise.")
         return {
-          text: js.text,
-          confidence: js.confidence,
+          text: "",
+          confidence: 0,
           warnings,
-          method: "tesseract-js",
+          method: "none",
           sourceFileName: input.fileName,
         }
       }
     } catch (error) {
+      console.error("[OCRExtractor] OCR failed", error)
       warnings.push(
         `OCR failed for ${input.fileName}: ${
           error instanceof Error ? error.message : String(error)

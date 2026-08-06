@@ -112,9 +112,23 @@ export async function POST(request: Request) {
     })
 
     if (!result.parse.success || !result.parse.preview || !result.parse.payload) {
+      const errorCode =
+        result.parse.diagnostics &&
+        typeof result.parse.diagnostics.errorCode === "string"
+          ? result.parse.diagnostics.errorCode
+          : null
+      if (result.parse.error) {
+        console.error(
+          "[ingest/process] parse failed",
+          errorCode,
+          result.parse.error,
+          result.parse.diagnostics
+        )
+      }
       return NextResponse.json(
         importApiFailure({
           error: result.parse.error ?? "Ingest parse failed.",
+          errorCode,
           warnings: result.parse.warnings,
           preview: result.parse.preview,
           diagnostics: {
@@ -145,9 +159,11 @@ export async function POST(request: Request) {
       { status: 200 }
     )
   } catch (error) {
+    console.error("[ingest/process] unexpected error", error)
     return NextResponse.json(
       importApiFailure({
         error: publicErrorMessage(error, "Unexpected ingest process error."),
+        errorCode: "parse_failed",
       }),
       { status: 500 }
     )

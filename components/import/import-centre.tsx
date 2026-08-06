@@ -172,8 +172,16 @@ export function ImportCentre() {
         if (cancelledRef.current) return
 
         if (!apiResult.success) {
-          setError(apiResult.error ?? "Import failed.")
-          setErrorDetails(apiResult.warnings)
+          const message = apiResult.error?.trim() || "Import failed."
+          setError(message)
+          const details = [...apiResult.warnings]
+          if (
+            apiResult.errorCode &&
+            !details.includes(apiResult.errorCode)
+          ) {
+            details.push(`Code: ${apiResult.errorCode}`)
+          }
+          setErrorDetails(details)
           setStage("error")
           return
         }
@@ -193,8 +201,16 @@ export function ImportCentre() {
           setProgress(createEmptyProgressEvent())
           return
         }
+        console.error("[import-centre] upload/parse failed", err)
+        const message =
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : "Failed to upload import file."
+        // Never surface Safari's opaque JSON SyntaxError as the primary UX.
         setError(
-          err instanceof Error ? err.message : "Failed to upload import file."
+          message === "The string did not match the expected pattern."
+            ? "Import failed. Server returned an unreadable response."
+            : message
         )
         setErrorDetails([])
         setStage("error")

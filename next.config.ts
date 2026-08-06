@@ -5,7 +5,6 @@ const nextConfig: NextConfig = {
   serverExternalPackages: [
     "pdfjs-dist",
     "@napi-rs/canvas",
-    "tesseract.js",
     "fflate",
     "sax",
   ],

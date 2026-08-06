@@ -11,6 +11,8 @@ export interface ImportApiResponse {
   warnings: string[]
   diagnostics: Record<string, unknown> | string | null
   error: string | null
+  /** Stable machine code for UI mapping (optional). */
+  errorCode?: string | null
   /**
    * Opaque payload the browser stores and sends back on confirm.
    * Contains already-parsed domain models — no re-parsing required.
@@ -30,12 +32,14 @@ export function importApiSuccess(input: {
     warnings: input.warnings ?? [],
     diagnostics: input.diagnostics ?? null,
     error: null,
+    errorCode: null,
     payload: input.payload,
   }
 }
 
 export function importApiFailure(input: {
   error: string
+  errorCode?: string | null
   warnings?: string[]
   diagnostics?: Record<string, unknown> | string | null
   preview?: ImportPreview | null
@@ -46,6 +50,7 @@ export function importApiFailure(input: {
     warnings: input.warnings ?? [],
     diagnostics: input.diagnostics ?? null,
     error: input.error,
+    errorCode: input.errorCode ?? null,
     payload: null,
   }
 }

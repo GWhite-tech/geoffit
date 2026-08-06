@@ -19,15 +19,11 @@ export function validateBloodTestParse(
   const manualEntryRequired = parsed.manualEntryRequired ?? []
 
   if (parsed.rawTextLength < 40) {
-    errors.push(
-      "Could not extract readable text from this PDF. Scanned reports require OCR; try again or use a text-based export."
-    )
+    errors.push("PDF text extraction failed.")
   }
 
   if (parsed.markers.length === 0 && manualEntryRequired.length === 0) {
-    errors.push(
-      "No biomarkers found. This importer currently supports Numan blood-test result PDFs."
-    )
+    errors.push("Unable to parse biomarkers.")
   }
 
   if (parsed.header.provider === "Unknown") {

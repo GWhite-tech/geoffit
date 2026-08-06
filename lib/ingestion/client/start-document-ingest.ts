@@ -17,7 +17,51 @@ export type IngestProcessApiResponse = {
   warnings: string[]
   diagnostics: Record<string, unknown> | string | null
   error: string | null
+  errorCode?: string | null
   payload: ParsedImportData | null
+}
+
+async function readIngestProcessResponse(
+  response: Response
+): Promise<IngestProcessApiResponse> {
+  const raw = await response.text()
+  let body: unknown = null
+  try {
+    body = raw ? JSON.parse(raw) : null
+  } catch (error) {
+    console.error(
+      "[startDocumentIngest] Non-JSON ingest response",
+      response.status,
+      raw.slice(0, 400),
+      error
+    )
+    throw new Error(
+      `Import failed (HTTP ${response.status}). Server returned an unreadable response.`
+    )
+  }
+
+  if (!body || typeof body !== "object") {
+    throw new Error(
+      `Import failed (HTTP ${response.status}). Empty server response.`
+    )
+  }
+
+  const parsed = body as Partial<IngestProcessApiResponse>
+  return {
+    success: Boolean(parsed.success),
+    preview: parsed.preview ?? null,
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    diagnostics: parsed.diagnostics ?? null,
+    error:
+      typeof parsed.error === "string" && parsed.error.trim()
+        ? parsed.error
+        : response.ok
+          ? null
+          : `Import failed (HTTP ${response.status}).`,
+    errorCode:
+      typeof parsed.errorCode === "string" ? parsed.errorCode : null,
+    payload: parsed.payload ?? null,
+  }
 }
 
 export type StartDocumentIngestInput = {
@@ -81,7 +125,7 @@ export async function startDocumentIngest(
     }),
   })
 
-  const body = (await response.json()) as IngestProcessApiResponse
+  const body = await readIngestProcessResponse(response)
 
   return {
     fileId: uploaded.file.id,
@@ -108,5 +152,5 @@ export async function retryDocumentIngest(input: {
       retry: true,
     }),
   })
-  return (await response.json()) as IngestProcessApiResponse
+  return readIngestProcessResponse(response)
 }

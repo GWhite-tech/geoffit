@@ -29,6 +29,7 @@ export interface ClientImportApiResponse {
   warnings: string[]
   diagnostics: Record<string, unknown> | string | null
   error: string | null
+  errorCode?: string | null
   payload: ParsedImportData | null
 }
 
@@ -207,7 +208,56 @@ export async function uploadImportFiles(
     body: form,
   })
 
-  return (await response.json()) as ClientImportApiResponse
+  const raw = await response.text()
+  let body: unknown = null
+  try {
+    body = raw ? JSON.parse(raw) : null
+  } catch (error) {
+    console.error(
+      "[uploadImportFiles] Non-JSON import response",
+      response.status,
+      raw.slice(0, 400),
+      error
+    )
+    return {
+      success: false,
+      preview: null,
+      warnings: [],
+      diagnostics: { httpStatus: response.status },
+      error: `Import failed (HTTP ${response.status}). Server returned an unreadable response.`,
+      errorCode: "parse_failed",
+      payload: null,
+    }
+  }
+
+  if (!body || typeof body !== "object") {
+    return {
+      success: false,
+      preview: null,
+      warnings: [],
+      diagnostics: { httpStatus: response.status },
+      error: `Import failed (HTTP ${response.status}). Empty server response.`,
+      errorCode: "parse_failed",
+      payload: null,
+    }
+  }
+
+  const parsed = body as Partial<ClientImportApiResponse>
+  return {
+    success: Boolean(parsed.success),
+    preview: parsed.preview ?? null,
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    diagnostics: parsed.diagnostics ?? null,
+    error:
+      typeof parsed.error === "string" && parsed.error.trim()
+        ? parsed.error
+        : response.ok
+          ? null
+          : `Import failed (HTTP ${response.status}).`,
+    errorCode:
+      typeof parsed.errorCode === "string" ? parsed.errorCode : null,
+    payload: parsed.payload ?? null,
+  }
 }
 
 export function toClientImportPreview(

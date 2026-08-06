@@ -185,6 +185,7 @@ export async function processIngestRun(
       signal: options.signal,
     })
   } catch (error) {
+    console.error("[processIngestRun] parser threw", error)
     parse = emptyParseFailure(
       error instanceof Error ? error.message : "Parser threw unexpectedly."
     )

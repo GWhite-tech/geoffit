@@ -9,6 +9,10 @@ import {
 import { buildBloodTestPreview } from "./BloodTestPreview"
 import { validateBloodTestParse } from "./BloodTestValidator"
 import { extractPdfTextFromBuffer } from "./extract-pdf-text"
+import {
+  logBloodPdfError,
+  toBloodPdfPublicError,
+} from "./errors"
 import type { BloodManualEntryMarker } from "./manual-entry"
 
 export interface BloodTestServerParseResult {
@@ -19,6 +23,7 @@ export interface BloodTestServerParseResult {
   bloodTest: BloodTest | null
   manualEntryRequired: BloodManualEntryMarker[]
   error?: string
+  errorCode?: string
 }
 
 /**
@@ -53,6 +58,10 @@ export async function parseBloodTestPdfOnServer(
     })
 
     if (!validation.valid) {
+      const primary =
+        validation.errors.find((e) => /biomarker/i.test(e)) ??
+        validation.errors[0] ??
+        "Unable to parse biomarkers."
       return {
         success: false,
         preview: null,
@@ -60,7 +69,10 @@ export async function parseBloodTestPdfOnServer(
         warnings: [...warnings, ...validation.warnings],
         bloodTest,
         manualEntryRequired,
-        error: validation.errors.join("\n"),
+        error: primary,
+        errorCode: /biomarker/i.test(primary)
+          ? "biomarkers_unparsed"
+          : "parse_failed",
       }
     }
 
@@ -79,6 +91,8 @@ export async function parseBloodTestPdfOnServer(
       manualEntryRequired,
     }
   } catch (error) {
+    logBloodPdfError("parseBloodTestPdfOnServer", error)
+    const publicError = toBloodPdfPublicError(error)
     return {
       success: false,
       preview: null,
@@ -86,10 +100,11 @@ export async function parseBloodTestPdfOnServer(
       warnings: [],
       bloodTest: null,
       manualEntryRequired: [],
-      error:
-        error instanceof Error
-          ? error.message
-          : "Failed to parse blood-test PDF on the server.",
+      error: publicError.message,
+      errorCode: publicError.code,
     }
   }
 }
+
+/** Re-export for callers that want typed PDF errors. */
+export { BloodPdfError } from "./errors"

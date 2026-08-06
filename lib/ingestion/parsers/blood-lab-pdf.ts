@@ -9,15 +9,25 @@ function toParseResult(
   api: Awaited<ReturnType<BloodTestImporter["parseUpload"]>>,
   checksum: string | null
 ): ParseResult {
+  const errorCode =
+    api.errorCode ??
+    (api.diagnostics &&
+    typeof api.diagnostics === "object" &&
+    typeof (api.diagnostics as { errorCode?: unknown }).errorCode === "string"
+      ? (api.diagnostics as { errorCode: string }).errorCode
+      : null)
+
   return {
     success: api.success,
     preview: api.preview,
     payload: api.payload,
     warnings: api.warnings,
-    diagnostics:
-      api.diagnostics && typeof api.diagnostics === "object"
+    diagnostics: {
+      ...(api.diagnostics && typeof api.diagnostics === "object"
         ? (api.diagnostics as Record<string, unknown>)
-        : null,
+        : {}),
+      ...(errorCode ? { errorCode } : {}),
+    },
     error: api.error,
     contentFingerprint: checksum,
   }

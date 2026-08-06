@@ -223,7 +223,8 @@ export async function loginAction(input: LoginInput): Promise<AuthActionResult> 
       )
     } catch (profileError) {
       console.error("ensure profile/preferences failed", profileError)
-      // Allow login even if tables are missing — Account can show setup.
+      // Still allow session, but cloud writes will self-heal via
+      // ensureAuthenticatedProfile / ensure_own_profile RPC.
     }
 
     return { ok: true, redirectTo: DEFAULT_AUTH_REDIRECT }

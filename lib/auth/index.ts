@@ -9,6 +9,7 @@ export {
 export { toFriendlyAuthError } from "./errors"
 export {
   createProfile,
+  ensureAuthenticatedProfile,
   ensureProfile,
   fetchProfile,
   greetingName,

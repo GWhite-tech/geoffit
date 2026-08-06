@@ -10,7 +10,7 @@ import {
 } from "react"
 import type { Session, User } from "@supabase/supabase-js"
 
-import { fetchProfile, type Profile } from "@/lib/auth"
+import { ensureAuthenticatedProfile, fetchProfile, type Profile } from "@/lib/auth"
 import { createClientOrNull } from "@/lib/supabase/client"
 import { getSupabaseEnv } from "@/lib/supabase/env"
 
@@ -44,10 +44,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return
     }
     try {
-      const row = await fetchProfile(supabase, nextUser.id)
+      const row = await ensureAuthenticatedProfile(supabase, nextUser)
       setProfile(row)
     } catch {
-      setProfile(null)
+      try {
+        const row = await fetchProfile(supabase, nextUser.id)
+        setProfile(row)
+      } catch {
+        setProfile(null)
+      }
     }
   }, [])
 

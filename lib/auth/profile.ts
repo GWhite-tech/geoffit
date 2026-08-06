@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js"
+import type { SupabaseClient, User } from "@supabase/supabase-js"
 
 import type { Profile } from "./types"
 
@@ -23,6 +23,16 @@ function splitDisplayName(name: string | null | undefined): {
   return {
     first_name: parts[0]!,
     last_name: parts.slice(1).join(" "),
+  }
+}
+
+function profileInsertFromUser(user: User): ProfileInsert {
+  const meta = user.user_metadata ?? {}
+  return {
+    userId: user.id,
+    email: user.email ?? "",
+    firstName: String(meta.first_name ?? meta.firstName ?? ""),
+    lastName: String(meta.last_name ?? meta.lastName ?? ""),
   }
 }
 
@@ -80,7 +90,7 @@ export async function createProfile(
   const row = {
     id: input.userId,
     display_name: displayName(first, last) || null,
-    email: input.email.trim().toLowerCase(),
+    email: input.email.trim().toLowerCase() || null,
   }
 
   const { data, error } = await supabase
@@ -100,6 +110,32 @@ export async function ensureProfile(
   const existing = await fetchProfile(supabase, input.userId)
   if (existing) return existing
   return createProfile(supabase, input)
+}
+
+/**
+ * Guarantees a profiles row for the authenticated user before FK-dependent
+ * writes (ingest_runs, user_files, …). Tries client upsert, then SECURITY
+ * DEFINER RPC as fallback.
+ */
+export async function ensureAuthenticatedProfile(
+  supabase: SupabaseClient,
+  user: User
+): Promise<Profile> {
+  const existing = await fetchProfile(supabase, user.id)
+  if (existing) return existing
+
+  try {
+    return await createProfile(supabase, profileInsertFromUser(user))
+  } catch (error) {
+    const { data, error: rpcError } = await supabase.rpc("ensure_own_profile")
+    if (rpcError) {
+      throw error instanceof Error ? error : rpcError
+    }
+    if (!data) {
+      throw new Error("Could not create a profiles row for the signed-in user.")
+    }
+    return mapProfileRow(data as Record<string, unknown>)
+  }
 }
 
 export async function updateProfile(

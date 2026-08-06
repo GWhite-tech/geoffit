@@ -1,8 +1,13 @@
 import "server-only"
 
 /**
- * Server-only PDF text extraction (Node).
- * Never import this module from a Client Component.
+ * Server-only PDF text extraction (Node.js runtime).
+ * Never import this module from a Client Component or Edge Runtime.
+ *
+ * pdfjs-dist's legacy build references DOMMatrix/ImageData/Path2D at module
+ * evaluation. On Node, Mozilla's supported backend is `@napi-rs/canvas`
+ * (optionalDependency of pdfjs-dist). We load it first so those globals exist
+ * before `pdf.mjs` evaluates — not hand-rolled stubs.
  */
 
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
@@ -10,6 +15,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import {
+  DOMMatrix as NodeDOMMatrix,
+  ImageData as NodeImageData,
+  Path2D as NodePath2D,
+} from "@napi-rs/canvas"
 
 const execFileAsync = promisify(execFile)
 
@@ -24,15 +34,38 @@ const MIN_NATIVE_CHARS = 120
 
 type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs")
 
+let pdfjsModulePromise: Promise<PdfJsModule> | null = null
+
+function installNodeCanvasGlobals(): void {
+  // Real implementations from @napi-rs/canvas (pdfjs Node backend), not stubs.
+  const g = globalThis as Record<string, unknown>
+  if (!g.DOMMatrix) g.DOMMatrix = NodeDOMMatrix
+  if (!g.ImageData) g.ImageData = NodeImageData
+  if (!g.Path2D) g.Path2D = NodePath2D
+}
+
+async function loadPdfJs(): Promise<PdfJsModule> {
+  if (!pdfjsModulePromise) {
+    installNodeCanvasGlobals()
+    // Legacy build is the Node-compatible distribution; still requires canvas globals.
+    pdfjsModulePromise = import("pdfjs-dist/legacy/build/pdf.mjs")
+  }
+  return pdfjsModulePromise
+}
+
 export async function extractPdfTextFromBuffer(
   data: Uint8Array,
   fileName = "upload.pdf"
 ): Promise<PdfExtractResult> {
   const warnings: string[] = []
-  const pdfjs: PdfJsModule = await import("pdfjs-dist/legacy/build/pdf.mjs")
+  const pdfjs = await loadPdfJs()
+
+  // Copy into a plain ArrayBuffer-backed view — avoids SharedArrayBuffer typing
+  // issues and matches pdfjs Node expectations.
+  const pdfBytes = Uint8Array.from(data)
 
   const doc = await pdfjs.getDocument({
-    data,
+    data: pdfBytes,
     useSystemFonts: true,
     disableFontFace: true,
   }).promise

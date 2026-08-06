@@ -107,14 +107,14 @@ values
     'lab-pdfs',
     'lab-pdfs',
     false,
-    104857600, -- 100 MB
+    104857600,
     array['application/pdf']::text[]
   ),
   (
     'raw-ingest',
     'raw-ingest',
     false,
-    524288000, -- 500 MB (Apple Health ZIPs, large dumps)
+    524288000,
     array[
       'application/zip',
       'application/x-zip-compressed',
@@ -130,8 +130,6 @@ set
   public = excluded.public,
   file_size_limit = excluded.file_size_limit,
   allowed_mime_types = excluded.allowed_mime_types;
-
--- Path convention: {user_id}/... — first folder must equal auth.uid()
 
 create policy lab_pdfs_select_own
   on storage.objects for select to authenticated

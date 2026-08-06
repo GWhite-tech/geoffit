@@ -19,6 +19,32 @@ import type {
 const RESUMABLE_THRESHOLD_BYTES = 6 * 1024 * 1024
 const TUS_CHUNK_SIZE = 6 * 1024 * 1024
 
+async function ensureProfileBeforeIngest(
+  supabase: SupabaseClient
+): Promise<{ userId: string; accessToken: string }> {
+  const { ensureAuthenticatedProfile } = await import("@/lib/auth/profile")
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser()
+  if (userError || !user) {
+    throw new Error("Sign in to upload files to Geoffit Cloud.")
+  }
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  if (!session?.access_token) {
+    throw new Error("Missing auth session for Storage upload.")
+  }
+
+  // ingest_runs.user_id → profiles.id; never insert without a profiles row.
+  await ensureAuthenticatedProfile(supabase, user)
+
+  return { userId: user.id, accessToken: session.access_token }
+}
+
 function mapUserFile(row: Record<string, unknown>): UserFileRow {
   return {
     id: String(row.id),
@@ -196,20 +222,7 @@ export async function uploadIngestDocument(input: {
   const { supabase, file, spec, onProgress } = input
   assertAccepted(file, spec)
 
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser()
-  if (userError || !user) {
-    throw new Error("Sign in to upload files to Geoffit Cloud.")
-  }
-
-  const {
-    data: { session },
-  } = await supabase.auth.getSession()
-  if (!session?.access_token) {
-    throw new Error("Missing auth session for Storage upload.")
-  }
+  const { userId, accessToken } = await ensureProfileBeforeIngest(supabase)
 
   const checksum = await sha256Hex(file)
   const uploadAttemptId = crypto.randomUUID()
@@ -217,13 +230,13 @@ export async function uploadIngestDocument(input: {
 
   const existing = await findExistingByChecksum(
     supabase,
-    user.id,
+    userId,
     checksum,
     spec.purpose
   )
 
   if (existing) {
-    const ingestRunId = await createIngestRun(supabase, user.id, clientRunId, {
+    const ingestRunId = await createIngestRun(supabase, userId, clientRunId, {
       document_kind: spec.documentKind,
       file_id: existing.id,
       reused_existing: true,
@@ -254,14 +267,14 @@ export async function uploadIngestDocument(input: {
   }
 
   const objectId = crypto.randomUUID()
-  const storagePath = buildStorageObjectPath(user.id, file.name, objectId)
+  const storagePath = buildStorageObjectPath(userId, file.name, objectId)
   const { url: projectUrl } = getSupabaseEnv()
   if (!projectUrl) {
     throw new Error("Supabase is not configured.")
   }
 
   // Create the job row before bytes leave the browser (audit lineage).
-  const ingestRunId = await createIngestRun(supabase, user.id, clientRunId, {
+  const ingestRunId = await createIngestRun(supabase, userId, clientRunId, {
     document_kind: spec.documentKind,
     original_filename: file.name,
     byte_size: file.size,
@@ -273,7 +286,7 @@ export async function uploadIngestDocument(input: {
   try {
     if (file.size >= RESUMABLE_THRESHOLD_BYTES) {
       await uploadViaTus({
-        accessToken: session.access_token,
+        accessToken,
         projectUrl,
         bucket: spec.bucket,
         path: storagePath,
@@ -302,7 +315,7 @@ export async function uploadIngestDocument(input: {
     .from("user_files")
     .insert({
       id: objectId,
-      user_id: user.id,
+      user_id: userId,
       purpose: spec.purpose,
       storage_bucket: spec.bucket,
       storage_path: storagePath,
@@ -328,7 +341,6 @@ export async function uploadIngestDocument(input: {
         error_summary: insertError.message,
       })
       .eq("id", ingestRunId)
-    // Best-effort cleanup of orphaned object
     await supabase.storage.from(spec.bucket).remove([storagePath])
     throw new Error(insertError.message)
   }

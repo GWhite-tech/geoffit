@@ -44,3 +44,4 @@ Start with [`01-overview.md`](./architecture/database/01-overview.md).
 | [migrations/phase-1](./architecture/database/migrations/phase-1.md) | Phase 1 SQL apply guide |
 | [migrations/storage-ingest-uploads](./architecture/database/migrations/storage-ingest-uploads.md) | Direct Storage upload pipeline (blood PDFs) |
 | [migrations/document-ingestion-framework](./architecture/database/migrations/document-ingestion-framework.md) | Pluggable document ingestion spine |
+| [migrations/profiles-ingest-fk-repair](./architecture/database/migrations/profiles-ingest-fk-repair.md) | Backfill profiles for pre-migration auth users |

@@ -15,16 +15,53 @@ export type BootstrapDomainResult =
   | "skipped_incomplete"
   | "error"
 
+/** Temporary fields for /debug/bootstrap — remove with the bootstrap bridge. */
+export type BootstrapDomainDebug = {
+  ingestRunId: string | null
+  replayFound: boolean | null
+  replayArtefactPath: string | null
+  replayItemCount: number | null
+  replayDownloadAttempted: boolean | null
+  replayDownloadSucceeded: boolean | null
+  fallbackUsed: boolean | null
+  retryCalled: boolean | null
+  /** null = retry not attempted; true/false = outcome of retryDocumentIngest */
+  retrySucceeded: boolean | null
+  confirmCalled: boolean | null
+  storeIngestCalled: boolean | null
+  finalStoreCount: number | null
+  lastError: string | null
+}
+
 export type BootstrapState = {
   version: number
   lastRunAt: string | null
   results: Partial<
     Record<"apple_health" | "blood" | "hevy", BootstrapDomainResult>
   >
+  debug?: Partial<Record<"blood" | "hevy", BootstrapDomainDebug>>
 }
 
 function stateKey(userId: string): string {
   return `${STATE_KEY_PREFIX}:${userId}`
+}
+
+export function emptyDomainDebug(): BootstrapDomainDebug {
+  return {
+    ingestRunId: null,
+    replayFound: null,
+    replayArtefactPath: null,
+    replayItemCount: null,
+    replayDownloadAttempted: null,
+    replayDownloadSucceeded: null,
+    fallbackUsed: null,
+    retryCalled: null,
+    retrySucceeded: null,
+    confirmCalled: null,
+    storeIngestCalled: null,
+    finalStoreCount: null,
+    lastError: null,
+  }
 }
 
 export function isBootstrapDisabled(): boolean {

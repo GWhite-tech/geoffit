@@ -6,9 +6,15 @@
 export {
   BOOTSTRAP_VERSION,
   clearBootstrapState,
+  emptyDomainDebug,
   isBootstrapDisabled,
   readBootstrapState,
   setBootstrapDisabled,
   writeBootstrapState,
+} from "./bootstrap-state"
+export type {
+  BootstrapDomainDebug,
+  BootstrapDomainResult,
+  BootstrapState,
 } from "./bootstrap-state"
 export { scheduleCloudBootstrap } from "./cloud-bootstrap"

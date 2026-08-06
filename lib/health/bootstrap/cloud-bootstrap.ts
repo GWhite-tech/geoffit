@@ -22,9 +22,11 @@ import type { ParsedImportData } from "@/lib/importers/Importer"
 
 import {
   BOOTSTRAP_VERSION,
+  emptyDomainDebug,
   isBootstrapDisabled,
   readBootstrapState,
   writeBootstrapState,
+  type BootstrapDomainDebug,
   type BootstrapDomainResult,
   type BootstrapState,
 } from "./bootstrap-state"
@@ -144,15 +146,33 @@ async function restoreAppleHealth(
   return getHealthStore().getRecordCount() > 0 ? "restored" : "skipped_incomplete"
 }
 
+type DomainRestoreOutcome = {
+  result: BootstrapDomainResult
+  debug: BootstrapDomainDebug
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /** Diagnostics embed or retryDocumentIngest — used when replay is absent or fails. */
 async function restoreBloodViaFallback(
   supabase: SupabaseClient,
   userId: string,
-  run: SuccessfulIngestRun
+  run: SuccessfulIngestRun,
+  debug: BootstrapDomainDebug
 ): Promise<void> {
+  debug.fallbackUsed = true
   const fromDiagnostics = bloodTestFromDiagnostics(run.diagnosticsJson)
   if (fromDiagnostics) {
+    console.info("[blood-bootstrap] Falling back to diagnostics embed")
+    console.info("[blood-bootstrap] BloodStore.ingest() called")
     getBloodStore().ingest([fromDiagnostics])
+    debug.storeIngestCalled = true
+    console.info(
+      "[blood-bootstrap] BloodStore test count after ingest",
+      getBloodStore().getTestCount()
+    )
     await healReplayAfterFallback({
       supabase,
       userId,
@@ -163,15 +183,32 @@ async function restoreBloodViaFallback(
     return
   }
 
+  console.info("[blood-bootstrap] Falling back to retryDocumentIngest()")
+  debug.retryCalled = true
   const api = await retryDocumentIngest({
     documentKind: "blood_lab_pdf",
     fileId: run.fileId,
     ingestRunId: run.id,
   })
+  console.info(
+    "[blood-bootstrap] retryDocumentIngest() response success",
+    api.success,
+    api.error ?? null
+  )
+  debug.retrySucceeded = Boolean(api.success && api.payload)
   if (!api.success || !api.payload) {
-    throw new Error(api.error?.trim() || "Blood re-parse failed")
+    debug.lastError = api.error?.trim() || "Blood re-parse failed"
+    throw new Error(debug.lastError)
   }
+  console.info("[blood-bootstrap] confirmParsedImport() called")
+  debug.confirmCalled = true
   await confirmParsedImport("blood-test", api.payload)
+  debug.storeIngestCalled = true
+  console.info("[blood-bootstrap] BloodStore.ingest() called")
+  console.info(
+    "[blood-bootstrap] BloodStore test count after ingest",
+    getBloodStore().getTestCount()
+  )
   await healReplayAfterFallback({
     supabase,
     userId,
@@ -184,66 +221,118 @@ async function restoreBloodViaFallback(
 async function restoreBloodFromRun(
   supabase: SupabaseClient,
   userId: string,
-  run: SuccessfulIngestRun
+  run: SuccessfulIngestRun,
+  debug: BootstrapDomainDebug
 ): Promise<void> {
+  debug.ingestRunId = run.id
   const replay = run.domainReplayPersist
-  if (replay && replay.complete && replay.itemCount > 0) {
+  const found = Boolean(replay && replay.complete && replay.itemCount > 0)
+  debug.replayFound =
+    debug.replayFound == null ? found : debug.replayFound || found
+  if (replay) {
+    debug.replayArtefactPath = `${replay.bucket}/${replay.path}`
+    debug.replayItemCount = replay.itemCount
+  }
+  console.info("[blood-bootstrap] Replay artefact found?", found)
+  if (found && replay) {
     try {
-      await ingestBloodDomainReplay({ supabase, persist: replay })
+      console.info("[blood-bootstrap] Replay download started")
+      debug.replayDownloadAttempted = true
+      const result = await ingestBloodDomainReplay({ supabase, persist: replay })
+      debug.replayDownloadSucceeded = true
+      debug.replayItemCount = result.ingested
+      debug.storeIngestCalled = true
+      console.info("[blood-bootstrap] Replay download succeeded")
+      console.info("[blood-bootstrap] Replay item count", result.ingested)
+      console.info("[blood-bootstrap] BloodStore.ingest() called (replay)")
+      console.info(
+        "[blood-bootstrap] BloodStore test count after ingest",
+        getBloodStore().getTestCount()
+      )
       return
     } catch (error) {
       // Replay is an optimisation — fall through to diagnostics/re-parse.
-      console.warn(
-        "[bootstrap] Blood domain-replay failed; falling back",
-        run.id,
-        error
-      )
+      console.warn("[blood-bootstrap] Replay failed", error)
+      debug.replayDownloadSucceeded = false
+      debug.lastError = errorMessage(error)
     }
   }
 
-  await restoreBloodViaFallback(supabase, userId, run)
+  await restoreBloodViaFallback(supabase, userId, run, debug)
 }
 
 async function restoreBlood(
   supabase: SupabaseClient,
   userId: string
-): Promise<BootstrapDomainResult> {
-  if (getBloodStore().getTestCount() > 0) return "skipped_local_data"
+): Promise<DomainRestoreOutcome> {
+  const debug = emptyDomainDebug()
+  console.info("[blood-bootstrap] Bootstrap started")
+  if (getBloodStore().getTestCount() > 0) {
+    debug.finalStoreCount = getBloodStore().getTestCount()
+    console.info("[blood-bootstrap] Bootstrap complete", "skipped_local_data")
+    return { result: "skipped_local_data", debug }
+  }
 
   // All succeeded blood runs (oldest → newest) so a failed newer upload never
   // hides earlier successes; selection is always status=succeeded ingest_runs.
   const runs = await listSuccessfulIngests(supabase, userId, "blood_lab_pdf")
-  if (runs.length === 0) return "skipped_no_ingest"
+  if (runs.length === 0) {
+    debug.finalStoreCount = getBloodStore().getTestCount()
+    console.info("[blood-bootstrap] Bootstrap complete", "skipped_no_ingest")
+    return { result: "skipped_no_ingest", debug }
+  }
 
   const chronological = [...runs].reverse()
   let restoredAny = false
   for (const run of chronological) {
     try {
-      await restoreBloodFromRun(supabase, userId, run)
+      await restoreBloodFromRun(supabase, userId, run, debug)
       restoredAny = true
     } catch (error) {
       console.warn("[bootstrap] blood restore failed for ingest", run.id, error)
+      debug.lastError = errorMessage(error)
     }
   }
-  return restoredAny || getBloodStore().getTestCount() > 0
-    ? "restored"
-    : "error"
+  debug.finalStoreCount = getBloodStore().getTestCount()
+  const result =
+    restoredAny || getBloodStore().getTestCount() > 0 ? "restored" : "error"
+  console.info("[blood-bootstrap] Bootstrap complete", result)
+  return { result, debug }
 }
 
 async function restoreHevyViaFallback(
   supabase: SupabaseClient,
   userId: string,
-  run: SuccessfulIngestRun
+  run: SuccessfulIngestRun,
+  debug: BootstrapDomainDebug
 ): Promise<void> {
+  debug.fallbackUsed = true
+  console.info("[hevy-bootstrap] Falling back to retryDocumentIngest()")
+  debug.retryCalled = true
   const api = await retryDocumentIngest({
     documentKind: "hevy_csv",
     fileId: run.fileId,
     ingestRunId: run.id,
   })
+  console.info(
+    "[hevy-bootstrap] retryDocumentIngest() response success",
+    api.success,
+    api.error ?? null
+  )
+  debug.retrySucceeded = Boolean(api.success && api.payload)
   if (!api.success || !api.payload) {
-    throw new Error(api.error?.trim() || "Hevy re-parse failed")
+    debug.lastError = api.error?.trim() || "Hevy re-parse failed"
+    throw new Error(debug.lastError)
   }
+  console.info("[hevy-bootstrap] confirmParsedImport() called")
+  debug.confirmCalled = true
   await confirmParsedImport("hevy", api.payload)
+  debug.storeIngestCalled = true
+  console.info("[hevy-bootstrap] WorkoutStore.ingest() called (confirm)")
+  console.info(
+    "[hevy-bootstrap] WorkoutStore count after ingest",
+    getWorkoutStore().getAll().length
+  )
   await healReplayAfterFallback({
     supabase,
     userId,
@@ -256,36 +345,73 @@ async function restoreHevyViaFallback(
 async function restoreHevy(
   supabase: SupabaseClient,
   userId: string
-): Promise<BootstrapDomainResult> {
-  if (getWorkoutStore().getAll().length > 0) return "skipped_local_data"
+): Promise<DomainRestoreOutcome> {
+  const debug = emptyDomainDebug()
+  console.info("[hevy-bootstrap] Bootstrap started")
+  if (getWorkoutStore().getAll().length > 0) {
+    debug.finalStoreCount = getWorkoutStore().getAll().length
+    console.info("[hevy-bootstrap] Bootstrap complete", "skipped_local_data")
+    return { result: "skipped_local_data", debug }
+  }
 
   const run = await findLatestSuccessfulIngest(supabase, userId, "hevy_csv")
-  if (!run) return "skipped_no_ingest"
+  if (!run) {
+    debug.finalStoreCount = getWorkoutStore().getAll().length
+    console.info("[hevy-bootstrap] Bootstrap complete", "skipped_no_ingest")
+    return { result: "skipped_no_ingest", debug }
+  }
 
+  debug.ingestRunId = run.id
   const replay = run.domainReplayPersist
-  if (replay && replay.complete && replay.itemCount > 0) {
+  const found = Boolean(replay && replay.complete && replay.itemCount > 0)
+  debug.replayFound = found
+  if (replay) {
+    debug.replayArtefactPath = `${replay.bucket}/${replay.path}`
+    debug.replayItemCount = replay.itemCount
+  }
+  console.info("[hevy-bootstrap] Replay artefact found?", found)
+  if (found && replay) {
     try {
-      await ingestHevyDomainReplay({ supabase, persist: replay })
-      return getWorkoutStore().getAll().length > 0
-        ? "restored"
-        : "skipped_incomplete"
+      console.info("[hevy-bootstrap] Replay download started")
+      debug.replayDownloadAttempted = true
+      const result = await ingestHevyDomainReplay({ supabase, persist: replay })
+      debug.replayDownloadSucceeded = true
+      debug.replayItemCount = result.ingested
+      debug.storeIngestCalled = true
+      console.info("[hevy-bootstrap] Replay download succeeded")
+      console.info("[hevy-bootstrap] Replay item count", result.ingested)
+      console.info("[hevy-bootstrap] WorkoutStore.ingest() called (replay)")
+      console.info(
+        "[hevy-bootstrap] WorkoutStore count after ingest",
+        getWorkoutStore().getAll().length
+      )
+      debug.finalStoreCount = getWorkoutStore().getAll().length
+      const resultStatus =
+        getWorkoutStore().getAll().length > 0 ? "restored" : "skipped_incomplete"
+      console.info("[hevy-bootstrap] Bootstrap complete", resultStatus)
+      return { result: resultStatus, debug }
     } catch (error) {
       // Replay is an optimisation — fall through to re-parse.
-      console.warn(
-        "[bootstrap] Hevy domain-replay failed; falling back",
-        run.id,
-        error
-      )
+      console.warn("[hevy-bootstrap] Replay failed", error)
+      debug.replayDownloadSucceeded = false
+      debug.lastError = errorMessage(error)
     }
   }
 
   try {
-    await restoreHevyViaFallback(supabase, userId, run)
+    await restoreHevyViaFallback(supabase, userId, run, debug)
   } catch (error) {
     console.warn("[bootstrap] Hevy fallback restore failed", run.id, error)
-    return "error"
+    debug.lastError = errorMessage(error)
+    debug.finalStoreCount = getWorkoutStore().getAll().length
+    console.info("[hevy-bootstrap] Bootstrap complete", "error")
+    return { result: "error", debug }
   }
-  return getWorkoutStore().getAll().length > 0 ? "restored" : "skipped_incomplete"
+  debug.finalStoreCount = getWorkoutStore().getAll().length
+  const resultStatus =
+    getWorkoutStore().getAll().length > 0 ? "restored" : "skipped_incomplete"
+  console.info("[hevy-bootstrap] Bootstrap complete", resultStatus)
+  return { result: resultStatus, debug }
 }
 
 /**
@@ -309,6 +435,9 @@ export function scheduleCloudBootstrap(
 
       const prior = readBootstrapState(userId)
       const results: BootstrapState["results"] = { ...(prior?.results ?? {}) }
+      const debug: NonNullable<BootstrapState["debug"]> = {
+        ...(prior?.debug ?? {}),
+      }
 
       try {
         results.apple_health = await restoreAppleHealth(supabase, userId)
@@ -318,23 +447,36 @@ export function scheduleCloudBootstrap(
       }
 
       try {
-        results.blood = await restoreBlood(supabase, userId)
+        const blood = await restoreBlood(supabase, userId)
+        results.blood = blood.result
+        debug.blood = blood.debug
       } catch (error) {
         console.warn("[bootstrap] Blood restore error", error)
         results.blood = "error"
+        debug.blood = {
+          ...emptyDomainDebug(),
+          lastError: errorMessage(error),
+        }
       }
 
       try {
-        results.hevy = await restoreHevy(supabase, userId)
+        const hevy = await restoreHevy(supabase, userId)
+        results.hevy = hevy.result
+        debug.hevy = hevy.debug
       } catch (error) {
         console.warn("[bootstrap] Hevy restore error", error)
         results.hevy = "error"
+        debug.hevy = {
+          ...emptyDomainDebug(),
+          lastError: errorMessage(error),
+        }
       }
 
       writeBootstrapState(userId, {
         version: BOOTSTRAP_VERSION,
         lastRunAt: new Date().toISOString(),
         results,
+        debug,
       })
     } catch (error) {
       console.warn("[bootstrap] unexpected failure", error)

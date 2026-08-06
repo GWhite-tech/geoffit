@@ -45,8 +45,10 @@ function resolvePdfJsAssetUrls(): {
   cMapUrl: string
   wasmUrl: string
 } {
-  const require = createRequire(join(process.cwd(), "package.json"))
-  const pdfjsRoot = dirname(require.resolve("pdfjs-dist/package.json"))
+  // Same as production: resolve via pdf.mjs entry, never package.json.
+  const require = createRequire(import.meta.url)
+  const pdfEntry = require.resolve("pdfjs-dist/legacy/build/pdf.mjs")
+  const pdfjsRoot = join(dirname(pdfEntry), "..", "..")
   return {
     pdfjsRoot,
     standardFontDataUrl: join(pdfjsRoot, "standard_fonts") + "/",

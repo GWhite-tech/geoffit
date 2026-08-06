@@ -64,8 +64,10 @@ async function loadPdfJs(): Promise<PdfJsModule> {
 }
 
 export function resolvePdfJsAssetUrls(): LoadedPdf["assetUrls"] {
-  const require = createRequire(join(process.cwd(), "package.json"))
-  const pdfjsRoot = dirname(require.resolve("pdfjs-dist/package.json"))
+  // Resolve via a real module entry — never pdfjs-dist/package.json (missing on Vercel NFT).
+  const require = createRequire(import.meta.url)
+  const pdfEntry = require.resolve("pdfjs-dist/legacy/build/pdf.mjs")
+  const pdfjsRoot = join(dirname(pdfEntry), "..", "..")
   return {
     pdfjsRoot,
     standardFontDataUrl: join(pdfjsRoot, "standard_fonts") + "/",

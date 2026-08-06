@@ -73,6 +73,12 @@ export async function runBloodPdfPipeline(
   let manualEntryRequired: BloodManualEntryMarker[] = []
   let preview: ImportPreview | null = null
 
+  // Fingerprint bytes at pipeline entry (post-Storage, pre-pdf.js).
+  const { logPdfBytesTransform } = await import("../pdf-bytes-fingerprint")
+  logPdfBytesTransform(bytes, "geoffit.pipeline_entry", "before_pdf_loader", {
+    fileName,
+  })
+
   // 1. PDF Loader — open PDF only. Never OCR.
   const pdfLoader = await runPdfLoaderStage(bytes, fileName)
   if (pdfLoader.stage.status === "failed" || !pdfLoader.loaded) {

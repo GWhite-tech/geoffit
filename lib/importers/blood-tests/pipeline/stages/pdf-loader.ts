@@ -17,6 +17,7 @@ import {
   logOpenedDocumentIdentity,
   logUploadBytesIdentity,
 } from "../document-identity"
+import { logPdfBytesBeforeGetDocument } from "../../pdf-bytes-fingerprint"
 
 type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs")
 
@@ -150,8 +151,16 @@ export async function runPdfLoaderStage(
 
     let doc: LoadedPdf["doc"]
     try {
+      // Exact bytes passed to pdf.js — fingerprint AFTER copy, BEFORE getDocument.
+      const pdfData = Uint8Array.from(data)
+      logPdfBytesBeforeGetDocument(pdfData, "geoffit.pdf_loader", {
+        originalFilename: fileName,
+        inputByteLength: data.byteLength,
+        inputSha256: sha256,
+      })
+
       doc = await pdfjs.getDocument({
-        data: Uint8Array.from(data),
+        data: pdfData,
         useSystemFonts: true,
         disableFontFace: true,
         standardFontDataUrl: assetUrls.standardFontDataUrl,
@@ -159,6 +168,17 @@ export async function runPdfLoaderStage(
         cMapPacked: true,
         wasmUrl: assetUrls.wasmUrl,
       }).promise
+
+      console.info(
+        JSON.stringify({
+          scope: "pdf-bytes-fingerprint",
+          event: "after_getDocument_pageCount",
+          source: "geoffit.pdf_loader",
+          pageCount: doc.numPages,
+          sha256,
+          byteLength: data.byteLength,
+        })
+      )
     } finally {
       console.warn = originalWarn
     }

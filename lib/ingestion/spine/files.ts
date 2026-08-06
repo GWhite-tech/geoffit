@@ -52,7 +52,32 @@ export async function downloadStoredFile(
   if (error || !data) {
     throw new Error(error?.message ?? "Storage download failed")
   }
-  return new Uint8Array(await data.arrayBuffer())
+
+  // Trace Storage Blob → ArrayBuffer → Uint8Array (no parse).
+  const { logPdfBytesTransform } = await import(
+    "@/lib/importers/blood-tests/pdf-bytes-fingerprint"
+  )
+  const arrayBuffer = await data.arrayBuffer()
+  logPdfBytesTransform(
+    new Uint8Array(arrayBuffer),
+    "geoffit.storage_download",
+    "after_arrayBuffer",
+    {
+      storageBucket: file.bucket,
+      storagePath: file.path,
+      declaredMimeType: file.mimeType,
+      blobSize: data.size,
+      arrayBufferByteLength: arrayBuffer.byteLength,
+    }
+  )
+
+  const bytes = new Uint8Array(arrayBuffer)
+  logPdfBytesTransform(bytes, "geoffit.storage_download", "after_uint8array", {
+    storageBucket: file.bucket,
+    storagePath: file.path,
+    declaredMimeType: file.mimeType,
+  })
+  return bytes
 }
 
 export async function updateIngestRun(

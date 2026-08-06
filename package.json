@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:blood-pdf": "CI=true tsx --test lib/importers/blood-tests/pipeline/blood-lab-fixtures.test.ts",
+    "doctor:pdf": "tsx scripts/doctor-pdf.ts",
     "fixture:numan-blood": "node scripts/generate-numan-blood-fixture.mjs"
   },
   "dependencies": {

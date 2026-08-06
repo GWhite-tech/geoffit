@@ -1,11 +1,4 @@
-import { access, constants } from "node:fs/promises"
-import { createRequire } from "node:module"
-import { dirname, join } from "node:path"
-import {
-  DOMMatrix as NodeDOMMatrix,
-  ImageData as NodeImageData,
-  Path2D as NodePath2D,
-} from "@napi-rs/canvas"
+import { existsSync } from "node:fs"
 
 import type {
   PdfAssetCheck,
@@ -18,84 +11,26 @@ import {
   logUploadBytesIdentity,
 } from "../document-identity"
 import { logPdfBytesBeforeGetDocument } from "../../pdf-bytes-fingerprint"
+import {
+  assertPdfEnvironmentHealthy,
+  loadPdfJs,
+} from "../../pdf-environment"
+import {
+  getPdfJsAssetPaths,
+  resolvePdfJsAssetUrls,
+  type PdfJsAssetUrls,
+} from "../../pdfjs-asset-urls"
 
 type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs")
 
 export type LoadedPdf = {
   pdfjs: PdfJsModule
   doc: Awaited<ReturnType<PdfJsModule["getDocument"]>["promise"]>
-  assetUrls: {
-    pdfjsRoot: string
-    standardFontDataUrl: string
-    cMapUrl: string
-    wasmUrl: string
-  }
+  assetUrls: PdfJsAssetUrls
   pdfJsWarnings: string[]
 }
 
-let pdfjsModulePromise: Promise<PdfJsModule> | null = null
-
-function installNodeCanvasGlobals(): void {
-  const g = globalThis as Record<string, unknown>
-  if (!g.DOMMatrix) g.DOMMatrix = NodeDOMMatrix
-  if (!g.ImageData) g.ImageData = NodeImageData
-  if (!g.Path2D) g.Path2D = NodePath2D
-}
-
-async function installInProcessWorkerHandler(): Promise<void> {
-  const g = globalThis as typeof globalThis & {
-    pdfjsWorker?: { WorkerMessageHandler?: unknown }
-  }
-  if (g.pdfjsWorker?.WorkerMessageHandler) return
-  // @ts-expect-error pdfjs-dist ships worker .mjs without declaration
-  const workerMod = await import("pdfjs-dist/legacy/build/pdf.worker.mjs")
-  g.pdfjsWorker = workerMod
-}
-
-async function loadPdfJs(): Promise<PdfJsModule> {
-  if (!pdfjsModulePromise) {
-    pdfjsModulePromise = (async () => {
-      installNodeCanvasGlobals()
-      await installInProcessWorkerHandler()
-      return import("pdfjs-dist/legacy/build/pdf.mjs")
-    })()
-  }
-  return pdfjsModulePromise
-}
-
-export function resolvePdfJsAssetUrls(): LoadedPdf["assetUrls"] {
-  // Resolve via a real module entry — never pdfjs-dist/package.json (missing on Vercel NFT).
-  const require = createRequire(import.meta.url)
-  const pdfEntry = require.resolve("pdfjs-dist/legacy/build/pdf.mjs")
-  const pdfjsRoot = join(dirname(pdfEntry), "..", "..")
-  return {
-    pdfjsRoot,
-    standardFontDataUrl: join(pdfjsRoot, "standard_fonts") + "/",
-    cMapUrl: join(pdfjsRoot, "cmaps") + "/",
-    wasmUrl: join(pdfjsRoot, "wasm") + "/",
-  }
-}
-
-async function checkAsset(
-  key: PdfAssetCheck["key"],
-  dirWithSlash: string
-): Promise<PdfAssetCheck> {
-  const path = dirWithSlash
-  try {
-    await access(path, constants.R_OK)
-    return { key, path, exists: true, readable: true }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logBloodPdfPipeline("asset_missing", { key, path, error: message })
-    return {
-      key,
-      path,
-      exists: false,
-      readable: false,
-      error: message,
-    }
-  }
-}
+export { resolvePdfJsAssetUrls, getPdfJsAssetPaths, loadPdfJs }
 
 /**
  * Stage: PDF Loader — open document, verify asset paths, capture PDF version.
@@ -118,34 +53,43 @@ export async function runPdfLoaderStage(
   // Identity of bytes first — before getDocument / text extraction.
   const { sha256, comparison } = await logUploadBytesIdentity(data, fileName)
 
-  const assetUrls = resolvePdfJsAssetUrls()
   const pdfJsWarnings: string[] = []
-  const assetChecks = await Promise.all([
-    checkAsset("standardFontDataUrl", assetUrls.standardFontDataUrl),
-    checkAsset("cMapUrl", assetUrls.cMapUrl),
-    checkAsset("wasmUrl", assetUrls.wasmUrl),
-  ])
+  let assetUrls: PdfJsAssetUrls | null = null
+  let assetChecks: PdfAssetCheck[] = []
 
-  const missing = assetChecks.filter((c) => !c.exists)
-  if (missing.length > 0) {
-    logBloodPdfPipeline("pdfjs_assets_unresolved", {
-      missing: missing.map((m) => ({
-        key: m.key,
-        path: m.path,
-        error: m.error,
-      })),
-    })
-  } else {
+  try {
+    // Prove the whole parser environment before touching the PDF.
+    const { report, pdfjs, assetUrls: urls } =
+      await assertPdfEnvironmentHealthy()
+    assetUrls = urls
+    assetChecks = [
+      {
+        key: "standardFontDataUrl",
+        path: report.assets.paths.standardFonts,
+        exists: report.assets.standardFonts,
+        readable: report.assets.standardFonts,
+      },
+      {
+        key: "cMapUrl",
+        path: report.assets.paths.cmaps,
+        exists: report.assets.cmaps,
+        readable: report.assets.cmaps,
+      },
+      {
+        key: "wasmUrl",
+        path: report.assets.paths.wasm,
+        exists: report.assets.wasm,
+        readable: report.assets.wasm,
+      },
+    ]
     logBloodPdfPipeline("pdfjs_assets_ok", {
       standardFontDataUrl: assetUrls.standardFontDataUrl,
       cMapUrl: assetUrls.cMapUrl,
       cMapPacked: true,
       wasmUrl: assetUrls.wasmUrl,
+      environment: report,
     })
-  }
 
-  try {
-    const pdfjs = await loadPdfJs()
     const originalWarn = console.warn
     const warnSpy = (...args: unknown[]) => {
       const msg = args.map(String).join(" ")
@@ -166,14 +110,28 @@ export async function runPdfLoaderStage(
         inputSha256: sha256,
       })
 
+      const standardFontsPath = assetUrls.standardFontDataUrl
+      const cMapsPath = assetUrls.cMapUrl
+      const wasmPath = assetUrls.wasmUrl
+      console.info({
+        scope: "pdfjs-assets-before-getDocument",
+        standardFontsExists: existsSync(standardFontsPath),
+        cMapsExists: existsSync(cMapsPath),
+        wasmExists: existsSync(wasmPath),
+        standardFontsPath,
+        cMapsPath,
+        wasmPath,
+        cwd: process.cwd(),
+      })
+
       doc = await pdfjs.getDocument({
         data: pdfData,
         useSystemFonts: true,
         disableFontFace: true,
-        standardFontDataUrl: assetUrls.standardFontDataUrl,
-        cMapUrl: assetUrls.cMapUrl,
+        standardFontDataUrl: standardFontsPath,
+        cMapUrl: cMapsPath,
         cMapPacked: true,
-        wasmUrl: assetUrls.wasmUrl,
+        wasmUrl: wasmPath,
       }).promise
 
       console.info(
@@ -249,6 +207,9 @@ export async function runPdfLoaderStage(
       originalFilename: fileName,
       fixtureComparison: comparison,
     })
+    const isEnv =
+      message.startsWith("PDFJS_ASSETS_NOT_FOUND") ||
+      message.startsWith("PDF_ENVIRONMENT_UNHEALTHY")
     return {
       stage: {
         stage: "pdf_loader",
@@ -274,7 +235,7 @@ export async function runPdfLoaderStage(
             fixtureVerdict: comparison.verdict,
           },
         },
-        error: "PDF text extraction failed.",
+        error: isEnv ? message : "PDF text extraction failed.",
       },
       loaded: null,
     }

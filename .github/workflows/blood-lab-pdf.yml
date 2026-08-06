@@ -6,6 +6,8 @@ on:
       - "lib/importers/blood-tests/**"
       - "fixtures/blood-lab-pdfs/**"
       - "lib/ingestion/parsers/blood-lab-pdf.ts"
+      - "scripts/doctor-pdf.ts"
+      - "next.config.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/blood-lab-pdf.yml"
@@ -14,6 +16,8 @@ on:
       - "lib/importers/blood-tests/**"
       - "fixtures/blood-lab-pdfs/**"
       - "lib/ingestion/parsers/blood-lab-pdf.ts"
+      - "scripts/doctor-pdf.ts"
+      - "next.config.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/blood-lab-pdf.yml"
@@ -37,6 +41,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Doctor pdf.js environment
+        run: pnpm doctor:pdf
 
       - name: Run blood lab PDF regression suite
         run: pnpm test:blood-pdf

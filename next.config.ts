@@ -1,14 +1,14 @@
 import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
-  // Keep native / complex packages external so Node can require them at runtime.
+  // Keep native / complex packages external so Node loads them at runtime (ESM).
   serverExternalPackages: [
     "pdfjs-dist",
     "@napi-rs/canvas",
     "fflate",
     "sax",
   ],
-  // Ensure cmaps / fonts / wasm ship with serverless functions (not only pdf.mjs).
+  // Ship pdf.js asset dirs into serverless bundles (static cwd paths in pdfjs-asset-urls).
   outputFileTracingIncludes: {
     "/api/**/*": [
       "./node_modules/pdfjs-dist/legacy/**/*",

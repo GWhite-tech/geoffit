@@ -292,7 +292,8 @@ Includes standard personal columns.
 | status | text | NO | `queued\|running\|partial\|succeeded\|failed\|cancelled` | Run state | `succeeded` |
 | started_at | timestamptz | YES | | | |
 | finished_at | timestamptz | YES | | | |
-| stats | jsonb | YES | | Counts / timings | `{"upserted":1204}` |
+| stats | jsonb | YES | | Counts / timings / attempt | `{"attempt":1,"upserted":1204}` |
+| diagnostics_json | jsonb | YES | | Parser stage diagnostics | See migrations/ingest-runs-diagnostics-json.md |
 | client_run_id | text | YES | UNIQUE (user_id, client_run_id) where set | Client idempotency | `run_01H…` |
 | error_summary | text | YES | | Top-level error | |
 

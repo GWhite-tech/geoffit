@@ -63,6 +63,8 @@ export async function updateIngestRun(
     status: string
     errorSummary?: string | null
     stats?: Record<string, unknown>
+    /** Production parser diagnostics (ingest_runs.diagnostics_json). */
+    diagnosticsJson?: Record<string, unknown> | null
     started?: boolean
     finished?: boolean
   }
@@ -76,6 +78,9 @@ export async function updateIngestRun(
     patch.error_summary = input.errorSummary
   }
   if (input.stats) patch.stats = input.stats
+  if (input.diagnosticsJson !== undefined) {
+    patch.diagnostics_json = input.diagnosticsJson
+  }
 
   const { error } = await supabase
     .from("ingest_runs")

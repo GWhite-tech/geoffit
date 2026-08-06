@@ -217,12 +217,18 @@ export async function processIngestRun(
   }
 
   const status = parse.success ? "succeeded" : "failed"
+  const diagnosticsJson =
+    parse.diagnostics && typeof parse.diagnostics === "object"
+      ? (parse.diagnostics as Record<string, unknown>)
+      : null
+
   await updateIngestRun(options.supabase, {
     ingestRunId: options.ingestRunId,
     userId: options.userId,
     status,
     errorSummary: parse.success ? null : parse.error,
     finished: true,
+    diagnosticsJson,
     stats: {
       ...prior.stats,
       attempt,
@@ -230,7 +236,16 @@ export async function processIngestRun(
       file_id: primary.id,
       parser_id: parser.id,
       content_fingerprint: contentFingerprint,
-      diagnostics: parse.diagnostics,
+      // Keep a compact pointer in stats; full payload lives on diagnostics_json.
+      diagnostics_summary: diagnosticsJson
+        ? {
+            parser_name: diagnosticsJson.parser_name ?? null,
+            parser_version: diagnosticsJson.parser_version ?? null,
+            failed_stage: diagnosticsJson.failed_stage ?? null,
+            total_characters: diagnosticsJson.total_characters ?? null,
+            biomarkers_found: diagnosticsJson.biomarkers_found ?? null,
+          }
+        : null,
       facts_written: facts?.written ?? 0,
       facts_skipped: facts?.skipped ?? 0,
       timeline_written: timeline?.written ?? 0,

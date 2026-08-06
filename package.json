@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:blood-pdf": "CI=true tsx --test lib/importers/blood-tests/pipeline/blood-lab-fixtures.test.ts",
+    "fixture:numan-blood": "node scripts/generate-numan-blood-fixture.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -45,6 +47,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
     "tailwindcss": "^4",
+    "tsx": "^4.23.7",
     "typescript": "^5"
   }
 }

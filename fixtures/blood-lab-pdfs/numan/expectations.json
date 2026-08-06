@@ -1,0 +1,22 @@
+{
+  "provider": "numan",
+  "label": "Numan blood report",
+  "minPageCount": 2,
+  "minTotalCharacters": 5000,
+  "expectedProvider": "Numan",
+  "expectedTestDate": "2026-03-15",
+  "minBiomarkers": 30,
+  "expectedDocumentClass": "digital_selectable",
+  "markers": [
+    {
+      "key": "testosterone",
+      "value": 11.3,
+      "unitPattern": "nmol\\/L"
+    },
+    {
+      "key": "hba1c",
+      "value": 45,
+      "unitPattern": "mmol\\/mol"
+    }
+  ]
+}

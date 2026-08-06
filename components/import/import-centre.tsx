@@ -172,14 +172,49 @@ export function ImportCentre() {
         if (cancelledRef.current) return
 
         if (!apiResult.success) {
+          const failedStage =
+            apiResult.diagnostics &&
+            typeof apiResult.diagnostics === "object"
+              ? (() => {
+                  const d = apiResult.diagnostics as {
+                    failedStage?: unknown
+                    failed_stage?: unknown
+                  }
+                  if (typeof d.failedStage === "string") return d.failedStage
+                  if (typeof d.failed_stage === "string") return d.failed_stage
+                  return null
+                })()
+              : null
           const message = apiResult.error?.trim() || "Import failed."
-          setError(message)
+          setError(
+            failedStage
+              ? `[${failedStage}] ${message}`
+              : message
+          )
           const details = [...apiResult.warnings]
+          if (failedStage) details.unshift(`Failed stage: ${failedStage}`)
           if (
             apiResult.errorCode &&
             !details.includes(apiResult.errorCode)
           ) {
             details.push(`Code: ${apiResult.errorCode}`)
+          }
+          const totalChars =
+            apiResult.diagnostics &&
+            typeof apiResult.diagnostics === "object"
+              ? (() => {
+                  const d = apiResult.diagnostics as {
+                    totalChars?: unknown
+                    total_characters?: unknown
+                  }
+                  if (typeof d.totalChars === "number") return d.totalChars
+                  if (typeof d.total_characters === "number")
+                    return d.total_characters
+                  return null
+                })()
+              : null
+          if (totalChars != null) {
+            details.push(`Extracted characters: ${totalChars}`)
           }
           setErrorDetails(details)
           setStage("error")

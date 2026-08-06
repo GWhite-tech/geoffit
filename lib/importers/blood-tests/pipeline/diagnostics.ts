@@ -6,7 +6,7 @@ import type { BloodPdfPipelineResult } from "./types"
 
 export const BLOOD_LAB_PDF_PARSER_NAME = "blood_lab_pdf"
 /** Bump when staged parser behaviour / output contract changes. */
-export const BLOOD_LAB_PDF_PARSER_VERSION = "1.0.0"
+export const BLOOD_LAB_PDF_PARSER_VERSION = "1.1.0"
 
 export type IngestParserDiagnostics = {
   parser_name: string

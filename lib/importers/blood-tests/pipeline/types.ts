@@ -7,6 +7,7 @@ export type BloodPdfStageId =
   | "pdf_loader"
   | "text_extraction"
   | "document_classification"
+  | "ocr"
   | "provider_detection"
   | "biomarker_parsing"
   | "validation"
@@ -14,8 +15,8 @@ export type BloodPdfStageId =
 
 export type DocumentClass =
   | "digital_selectable"
-  | "sparse_text"
-  | "empty_text"
+  | "image_only"
+  | "mixed"
 
 export type StageStatus = "ok" | "failed" | "skipped"
 
@@ -82,9 +83,13 @@ export type TextExtractionDiagnostics = {
 export type ClassificationDiagnostics = {
   documentClass: DocumentClass
   totalChars: number
+  pageCount: number
+  charsPerPage: number[]
+  avgCharsPerPage: number
   minCharsForDigital: number
   reason: string
-  ocrRequired: false
+  /** True only when documentClass === "image_only". */
+  ocrRequired: boolean
   biomarkerSignal: BiomarkerSignalDiagnostics
 }
 
@@ -110,6 +115,14 @@ export type BiomarkerParsingDiagnostics = {
   warnings: string[]
 }
 
+export type OcrDiagnostics = {
+  attempted: boolean
+  skippedReason: string | null
+  method: "none" | "system-tesseract"
+  pageCount: number
+  warnings: string[]
+}
+
 export type ValidationDiagnostics = {
   valid: boolean
   errors: string[]
@@ -125,7 +138,7 @@ export type PipelineStructuredLog = {
   parserDecision: {
     documentClass: DocumentClass
     reason: string
-    ocrRequired: false
+    ocrRequired: boolean
     failedStage: BloodPdfStageId | null
   }
   stages: Array<{
@@ -148,6 +161,7 @@ export type BloodPdfPipelineResult = {
     pdfLoader: StageResult<PdfLoaderDiagnostics>
     textExtraction: StageResult<TextExtractionDiagnostics, { text: string }>
     classification: StageResult<ClassificationDiagnostics>
+    ocr: StageResult<OcrDiagnostics, { text: string }>
     providerDetection: StageResult<ProviderDetectionDiagnostics>
     biomarkerParsing: StageResult<BiomarkerParsingDiagnostics>
     validation: StageResult<ValidationDiagnostics>

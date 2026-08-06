@@ -34,8 +34,8 @@ export type BloodLabFixtureExpectations = {
   /** Expected document class from classifier. */
   expectedDocumentClass?:
     | "digital_selectable"
-    | "sparse_text"
-    | "empty_text"
+    | "image_only"
+    | "mixed"
 }
 
 export const FIXTURE_ROOT_RELATIVE = "fixtures/blood-lab-pdfs"

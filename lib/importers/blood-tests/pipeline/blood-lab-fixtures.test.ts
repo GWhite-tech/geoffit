@@ -75,6 +75,11 @@ describe("blood lab PDF fixtures", async () => {
           `totalChars=${structuredLog.totalChars}`
         )
         assert.equal(structuredLog.parserDecision.ocrRequired, false)
+        assert.equal(
+          result.stages.ocr.status,
+          "skipped",
+          "digital fixture must skip OCR stage (no dynamic OCR import path required)"
+        )
         if (expectations.expectedDocumentClass) {
           assert.equal(
             structuredLog.parserDecision.documentClass,

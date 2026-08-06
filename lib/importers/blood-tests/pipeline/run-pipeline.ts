@@ -6,11 +6,13 @@ import type { BloodManualEntryMarker } from "../manual-entry"
 import {
   toBloodPdfPublicError,
   logBloodPdfError,
+  inferFailedStageFromError,
 } from "../errors"
 
 import { runPdfLoaderStage } from "./stages/pdf-loader"
 import { runTextExtractionStage } from "./stages/extract-text"
 import { runDocumentClassificationStage } from "./stages/classify-document"
+import { skippedOcrStage } from "./stages/ocr-skip"
 import { runProviderDetectionStage } from "./stages/detect-provider"
 import { runBiomarkerParsingStage } from "./stages/parse-biomarkers"
 import { runValidationStage } from "./stages/validate"
@@ -18,6 +20,7 @@ import { logBloodPdfPipeline, logStructuredExtractSummary } from "./log"
 import type {
   BloodPdfPipelineResult,
   BloodPdfStageId,
+  OcrDiagnostics,
   PipelineStructuredLog,
   StageResult,
 } from "./types"
@@ -42,9 +45,19 @@ function emptyLoaderStage(): StageResult<
   }
 }
 
+function emptyOcrStage(
+  selectableText = ""
+): StageResult<OcrDiagnostics, { text: string }> {
+  return skippedOcrStage("not run", 0, selectableText)
+}
+
 /**
  * Explicit staged blood-PDF pipeline (parser-internal).
- * Fact writer remains deferred to the ingestion spine.
+ *
+ * Order: pdf_loader → text_extraction → classification → [ocr?] →
+ * provider → biomarkers → validation → fact_writer (deferred).
+ *
+ * OCR is dynamically imported ONLY when classification.ocrRequired === true.
  */
 export async function runBloodPdfPipeline(
   bytes: Uint8Array,
@@ -60,6 +73,7 @@ export async function runBloodPdfPipeline(
   let manualEntryRequired: BloodManualEntryMarker[] = []
   let preview: ImportPreview | null = null
 
+  // 1. PDF Loader — open PDF only. Never OCR.
   const pdfLoader = await runPdfLoaderStage(bytes, fileName)
   if (pdfLoader.stage.status === "failed" || !pdfLoader.loaded) {
     failedStage = "pdf_loader"
@@ -83,6 +97,7 @@ export async function runBloodPdfPipeline(
     })
   }
 
+  // 2. Text Extraction — pdf.js selectable text only. Never OCR.
   const textExtraction = await runTextExtractionStage(pdfLoader.loaded)
   extractedText = textExtraction.data?.text ?? ""
   if (textExtraction.status === "failed") {
@@ -91,16 +106,64 @@ export async function runBloodPdfPipeline(
     errorCode = "pdf_text_failed"
   }
 
-  const classification = runDocumentClassificationStage(extractedText)
+  // 3. Document Classification — digital_selectable | image_only | mixed.
+  const classification = runDocumentClassificationStage(
+    extractedText,
+    textExtraction.diagnostics
+  )
   warnings.push(classification.diagnostics.reason)
-  if (!failedStage && classification.status === "failed") {
-    failedStage = "document_classification"
-    error = classification.error ?? "PDF text extraction failed."
-    errorCode = "pdf_text_failed"
+
+  // 4. OCR — ONLY if classification.ocrRequired (image_only). Dynamic import.
+  let ocrStage: StageResult<OcrDiagnostics, { text: string }>
+  if (classification.diagnostics.ocrRequired) {
+    logBloodPdfPipeline("ocr_dynamic_import", {
+      reason: "classification.ocrRequired === true",
+      documentClass: classification.diagnostics.documentClass,
+    })
+    try {
+      const { runOcrStage } = await import("./stages/ocr")
+      ocrStage = await runOcrStage({
+        selectableText: extractedText,
+        pageCount: textExtraction.diagnostics.pageCount,
+        fileName,
+      })
+      extractedText = ocrStage.data?.text ?? extractedText
+      warnings.push(...ocrStage.diagnostics.warnings)
+      if (ocrStage.status === "failed") {
+        failedStage = failedStage ?? "ocr"
+        error = ocrStage.error ?? "OCR failed on this PDF."
+        errorCode = "ocr_failed"
+      }
+    } catch (ocrError) {
+      const publicError = toBloodPdfPublicError(ocrError)
+      failedStage = failedStage ?? "ocr"
+      error = publicError.message
+      errorCode = publicError.code
+      ocrStage = {
+        stage: "ocr",
+        status: "failed",
+        durationMs: 0,
+        diagnostics: {
+          attempted: true,
+          skippedReason: null,
+          method: "none",
+          pageCount: textExtraction.diagnostics.pageCount,
+          warnings: [publicError.message],
+        },
+        data: { text: extractedText },
+        error: publicError.message,
+      }
+      warnings.push(publicError.message)
+    }
+  } else {
+    ocrStage = skippedOcrStage(
+      `classification=${classification.diagnostics.documentClass}; ocrRequired=false`,
+      textExtraction.diagnostics.pageCount,
+      extractedText
+    )
   }
 
-  // Provider + biomarkers still run when we have text (for diagnostics),
-  // even if classification failed on empty text.
+  // 5–6. Provider + biomarkers + validation on current text.
   let providerDetection = runProviderDetectionStage(extractedText, {
     provider: "Unknown",
     panelName: "Blood Test",
@@ -154,6 +217,10 @@ export async function runBloodPdfPipeline(
         note: "Facts written by ingestion spine after confirm — not in this pipeline.",
       })
     }
+  } else if (!failedStage) {
+    failedStage = "biomarker_parsing"
+    error = "Unable to parse biomarkers."
+    errorCode = "biomarkers_unparsed"
   }
 
   const structuredLog = buildStructuredLog({
@@ -164,6 +231,7 @@ export async function runBloodPdfPipeline(
       pdfLoader.stage,
       textExtraction,
       classification,
+      ocrStage,
       providerDetection,
       biomarkerParsing,
       validation,
@@ -176,6 +244,16 @@ export async function runBloodPdfPipeline(
   })
   logStructuredExtractSummary(structuredLog)
 
+  const stages = {
+    pdfLoader: pdfLoader.stage,
+    textExtraction,
+    classification,
+    ocr: ocrStage,
+    providerDetection,
+    biomarkerParsing,
+    validation,
+  }
+
   if (failedStage) {
     return {
       success: false,
@@ -185,14 +263,7 @@ export async function runBloodPdfPipeline(
       warnings: dedupe(warnings),
       extractedText,
       structuredLog,
-      stages: {
-        pdfLoader: pdfLoader.stage,
-        textExtraction,
-        classification,
-        providerDetection,
-        biomarkerParsing,
-        validation,
-      },
+      stages,
       bloodTest,
       biomarkers,
       manualEntryRequired,
@@ -208,14 +279,7 @@ export async function runBloodPdfPipeline(
     warnings: dedupe(warnings),
     extractedText,
     structuredLog,
-    stages: {
-      pdfLoader: pdfLoader.stage,
-      textExtraction,
-      classification,
-      providerDetection,
-      biomarkerParsing,
-      validation,
-    },
+    stages,
     bloodTest,
     biomarkers,
     manualEntryRequired,
@@ -232,7 +296,9 @@ function buildStructuredLog(input: {
     BloodPdfPipelineResult["stages"]["classification"]["diagnostics"]
   > | null
   failedStage: BloodPdfStageId | null
-  stages: Array<Pick<StageResult<unknown>, "stage" | "status" | "durationMs" | "error">>
+  stages: Array<
+    Pick<StageResult<unknown>, "stage" | "status" | "durationMs" | "error">
+  >
 }): PipelineStructuredLog {
   const te = input.textExtraction?.diagnostics
   const cl = input.classification?.diagnostics
@@ -248,9 +314,9 @@ function buildStructuredLog(input: {
       extractedTextLength: 0,
     },
     parserDecision: {
-      documentClass: cl?.documentClass ?? "empty_text",
+      documentClass: cl?.documentClass ?? "image_only",
       reason: cl?.reason ?? "classification not run",
-      ocrRequired: false,
+      ocrRequired: cl?.ocrRequired ?? false,
       failedStage: input.failedStage,
     },
     stages: input.stages.map((s) => ({
@@ -301,8 +367,11 @@ function failResult(input: {
         stage: "document_classification",
         ...skipped,
         diagnostics: {
-          documentClass: "empty_text",
+          documentClass: "image_only",
           totalChars: 0,
+          pageCount: 0,
+          charsPerPage: [],
+          avgCharsPerPage: 0,
           minCharsForDigital: 500,
           reason: "skipped — PDF loader failed",
           ocrRequired: false,
@@ -314,6 +383,7 @@ function failResult(input: {
           },
         },
       },
+      ocr: emptyOcrStage(input.extractedText),
       providerDetection: {
         stage: "provider_detection",
         ...skipped,
@@ -361,12 +431,14 @@ export async function safeRunBloodPdfPipeline(
   } catch (error) {
     logBloodPdfError("runBloodPdfPipeline", error)
     const publicError = toBloodPdfPublicError(error)
+    const failedStage = inferFailedStageFromError(error)
     logBloodPdfPipeline("pipeline_crash", {
       error: publicError.message,
       code: publicError.code,
+      inferredFailedStage: failedStage,
     })
     return failResult({
-      failedStage: "pdf_loader",
+      failedStage,
       error: publicError.message,
       errorCode: publicError.code,
       warnings: [],
@@ -383,10 +455,10 @@ export async function safeRunBloodPdfPipeline(
           extractedTextLength: 0,
         },
         parserDecision: {
-          documentClass: "empty_text",
-          reason: "pipeline crashed before classification",
+          documentClass: "image_only",
+          reason: "pipeline crashed before classification completed",
           ocrRequired: false,
-          failedStage: "pdf_loader",
+          failedStage,
         },
         stages: [],
       },

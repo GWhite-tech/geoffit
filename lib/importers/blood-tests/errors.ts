@@ -1,6 +1,9 @@
 /**
  * Structured blood-PDF extract / parse errors for API + UI.
  * Messages are safe to show in the browser.
+ *
+ * IMPORTANT: Do not map generic "Cannot find module" to OCR — pdf.js worker /
+ * canvas / wasm failures also use that phrase and must stay pdf_loader / text_extraction.
  */
 
 export type BloodPdfErrorCode =
@@ -44,13 +47,27 @@ export function toBloodPdfPublicError(error: unknown): {
         ? error
         : ""
 
-  if (/Cannot find module|tesseract\.js|worker-script/i.test(raw)) {
+  // OCR only — require tesseract-specific paths, never bare "Cannot find module".
+  if (/tesseract\.js|tesseract\/|worker-script\/node/i.test(raw)) {
     return {
       code: "ocr_unavailable",
       message: CODE_MESSAGES.ocr_unavailable,
     }
   }
-  if (/pdf\.worker|getDocument|DOMMatrix|Invalid PDF|PDFDocument/i.test(raw)) {
+  if (
+    /pdf\.worker|getDocument|DOMMatrix|Invalid PDF|PDFDocument|@napi-rs\/canvas|standardFontDataUrl|cMapUrl|wasmUrl/i.test(
+      raw
+    ) ||
+    (/Cannot find module/i.test(raw) &&
+      /pdfjs|pdf\.worker|canvas|wasm/i.test(raw))
+  ) {
+    return {
+      code: "pdf_text_failed",
+      message: CODE_MESSAGES.pdf_text_failed,
+    }
+  }
+  if (/Cannot find module/i.test(raw)) {
+    // Unknown module resolution failure during PDF open/extract — not OCR.
     return {
       code: "pdf_text_failed",
       message: CODE_MESSAGES.pdf_text_failed,
@@ -69,6 +86,26 @@ export function toBloodPdfPublicError(error: unknown): {
     }
   }
   return { code: "parse_failed", message: CODE_MESSAGES.parse_failed }
+}
+
+/** Infer failed stage from a crash when stage context is unavailable. */
+export function inferFailedStageFromError(
+  error: unknown
+): "pdf_loader" | "text_extraction" | "ocr" | "biomarker_parsing" {
+  const raw =
+    error instanceof Error
+      ? `${error.message}\n${error.stack ?? ""}`
+      : String(error)
+  if (/tesseract\.js|tesseract\/|worker-script\/node|ocr_/i.test(raw)) {
+    return "ocr"
+  }
+  if (/getTextContent|text_extraction/i.test(raw)) {
+    return "text_extraction"
+  }
+  if (/biomarker|parseNuman/i.test(raw)) {
+    return "biomarker_parsing"
+  }
+  return "pdf_loader"
 }
 
 export function logBloodPdfError(scope: string, error: unknown): void {

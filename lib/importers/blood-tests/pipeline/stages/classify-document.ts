@@ -3,13 +3,14 @@ import type {
   ClassificationDiagnostics,
   DocumentClass,
   StageResult,
+  TextExtractionDiagnostics,
 } from "../types"
 import { logBloodPdfPipeline } from "../log"
 
 /** Digital PDFs with real selectable text clear this easily (Numan ~many KB). */
 export const MIN_CHARS_DIGITAL = 500
-/** Any extractable text means OCR must not run. */
-export const MIN_CHARS_ANY_TEXT = 1
+/** Below this average chars/page → treat as image-only (e.g. ~11 chars/page). */
+export const MAX_AVG_CHARS_IMAGE_ONLY = 40
 
 const BIOMARKER_SIGNAL_CHECKS: Array<{ id: string; pattern: RegExp }> = [
   { id: "Identifier Observation", pattern: /Identifier\s+Observation/i },
@@ -38,55 +39,68 @@ export function explainBiomarkerSignal(text: string): BiomarkerSignalDiagnostics
 }
 
 /**
- * Stage: Document Classification — digital vs sparse vs empty.
- * OCR is never required when any selectable text exists.
+ * Stage: Document Classification — digital_selectable | image_only | mixed.
+ * Based solely on extracted text + page stats. Never imports OCR.
  */
 export function runDocumentClassificationStage(
-  text: string
+  text: string,
+  extraction: Pick<
+    TextExtractionDiagnostics,
+    "pageCount" | "charsPerPage" | "totalChars"
+  >
 ): StageResult<ClassificationDiagnostics> {
   const started = performance.now()
-  const totalChars = text.length
+  const totalChars = extraction.totalChars
+  const pageCount = Math.max(1, extraction.pageCount)
+  const charsPerPage = extraction.charsPerPage
+  const avgCharsPerPage = totalChars / pageCount
   const biomarkerSignal = explainBiomarkerSignal(text)
 
   let documentClass: DocumentClass
   let reason: string
+  let ocrRequired = false
 
   if (totalChars >= MIN_CHARS_DIGITAL) {
     documentClass = "digital_selectable"
-    reason = `totalChars (${totalChars}) >= MIN_CHARS_DIGITAL (${MIN_CHARS_DIGITAL}); treating as digital selectable PDF. OCR not required.`
-  } else if (totalChars >= MIN_CHARS_ANY_TEXT) {
-    documentClass = "sparse_text"
-    reason = `totalChars (${totalChars}) is below MIN_CHARS_DIGITAL (${MIN_CHARS_DIGITAL}) but > 0. Extractable text present — OCR must NOT run. Biomarker signal matched=[${biomarkerSignal.matchedRegexIds.join(", ") || "none"}] failed=[${biomarkerSignal.failedRegexIds.join(", ")}].`
+    ocrRequired = false
+    reason = `totalChars (${totalChars}) >= MIN_CHARS_DIGITAL (${MIN_CHARS_DIGITAL}); avgCharsPerPage=${avgCharsPerPage.toFixed(1)}. digital_selectable — OCR must NOT run.`
+  } else if (avgCharsPerPage <= MAX_AVG_CHARS_IMAGE_ONLY) {
+    documentClass = "image_only"
+    ocrRequired = true
+    reason = `avgCharsPerPage (${avgCharsPerPage.toFixed(1)}) <= ${MAX_AVG_CHARS_IMAGE_ONLY} and totalChars (${totalChars}) < ${MIN_CHARS_DIGITAL}. image_only — OCR stage may run after classification.`
   } else {
-    documentClass = "empty_text"
-    reason = `totalChars is 0 — page.getTextContent() returned no extractable strings. Investigate pdf.js extraction (not OCR). Biomarker signal N/A (empty text). failedRegexIds=[${biomarkerSignal.failedRegexIds.join(", ")}].`
+    documentClass = "mixed"
+    ocrRequired = false
+    reason = `totalChars (${totalChars}) is below digital threshold but avgCharsPerPage (${avgCharsPerPage.toFixed(1)}) > ${MAX_AVG_CHARS_IMAGE_ONLY}. mixed — use extractable text; OCR must NOT run.`
   }
 
   const diagnostics: ClassificationDiagnostics = {
     documentClass,
     totalChars,
+    pageCount,
+    charsPerPage,
+    avgCharsPerPage,
     minCharsForDigital: MIN_CHARS_DIGITAL,
     reason,
-    ocrRequired: false,
+    ocrRequired,
     biomarkerSignal,
   }
 
   logBloodPdfPipeline("document_classification", {
     documentClass,
     totalChars,
+    pageCount,
+    charsPerPage,
+    avgCharsPerPage,
     reason,
-    ocrRequired: false,
+    ocrRequired,
     biomarkerSignal,
   })
 
   return {
     stage: "document_classification",
-    status: documentClass === "empty_text" ? "failed" : "ok",
+    status: "ok",
     durationMs: Math.round(performance.now() - started),
     diagnostics,
-    error:
-      documentClass === "empty_text"
-        ? "PDF text extraction failed."
-        : undefined,
   }
 }

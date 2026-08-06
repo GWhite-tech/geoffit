@@ -4,10 +4,15 @@ import "server-only"
  * Server-only PDF text extraction (Node.js runtime).
  * Never import this module from a Client Component or Edge Runtime.
  *
- * pdfjs-dist's legacy build references DOMMatrix/ImageData/Path2D at module
- * evaluation. On Node, Mozilla's supported backend is `@napi-rs/canvas`
- * (optionalDependency of pdfjs-dist). We load it first so those globals exist
- * before `pdf.mjs` evaluates — not hand-rolled stubs.
+ * Canvas: `@napi-rs/canvas` supplies real DOMMatrix/ImageData/Path2D before
+ * pdf.mjs evaluates (Mozilla's Node backend — not hand-rolled stubs).
+ *
+ * Worker: pdfjs 6.x on Node always disables real Workers, then uses an
+ * in-process "fake worker" (LoopbackPort) that still needs WorkerMessageHandler.
+ * Default workerSrc is "./pdf.worker.mjs" (relative) which fails under
+ * Next/Vercel. We preload the worker bundle onto `globalThis.pdfjsWorker` so
+ * that path never dynamic-imports workerSrc. Same Node process; no Worker(),
+ * no workerSrc assignment.
  */
 
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
@@ -37,18 +42,35 @@ type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs")
 let pdfjsModulePromise: Promise<PdfJsModule> | null = null
 
 function installNodeCanvasGlobals(): void {
-  // Real implementations from @napi-rs/canvas (pdfjs Node backend), not stubs.
   const g = globalThis as Record<string, unknown>
   if (!g.DOMMatrix) g.DOMMatrix = NodeDOMMatrix
   if (!g.ImageData) g.ImageData = NodeImageData
   if (!g.Path2D) g.Path2D = NodePath2D
 }
 
+/**
+ * Make PDFWorker.#mainThreadWorkerMessageHandler resolve without
+ * `import(GlobalWorkerOptions.workerSrc)` (defaults to "./pdf.worker.mjs").
+ */
+async function installInProcessWorkerHandler(): Promise<void> {
+  const g = globalThis as typeof globalThis & {
+    pdfjsWorker?: { WorkerMessageHandler?: unknown }
+  }
+  if (g.pdfjsWorker?.WorkerMessageHandler) return
+
+  // Package-absolute import — resolvable on Vercel; runs in this process.
+  // @ts-expect-error pdfjs-dist ships worker .mjs without declaration
+  const workerMod = await import("pdfjs-dist/legacy/build/pdf.worker.mjs")
+  g.pdfjsWorker = workerMod
+}
+
 async function loadPdfJs(): Promise<PdfJsModule> {
   if (!pdfjsModulePromise) {
-    installNodeCanvasGlobals()
-    // Legacy build is the Node-compatible distribution; still requires canvas globals.
-    pdfjsModulePromise = import("pdfjs-dist/legacy/build/pdf.mjs")
+    pdfjsModulePromise = (async () => {
+      installNodeCanvasGlobals()
+      await installInProcessWorkerHandler()
+      return import("pdfjs-dist/legacy/build/pdf.mjs")
+    })()
   }
   return pdfjsModulePromise
 }
@@ -60,8 +82,8 @@ export async function extractPdfTextFromBuffer(
   const warnings: string[] = []
   const pdfjs = await loadPdfJs()
 
-  // Copy into a plain ArrayBuffer-backed view — avoids SharedArrayBuffer typing
-  // issues and matches pdfjs Node expectations.
+  // Plain ArrayBuffer-backed view for pdfjs Node expectations.
+  // Do not set GlobalWorkerOptions.workerSrc — handler is on globalThis.pdfjsWorker.
   const pdfBytes = Uint8Array.from(data)
 
   const doc = await pdfjs.getDocument({

@@ -7,6 +7,7 @@
  * distance_miles, duration_seconds, rpe
  *
  * One row per set. Workouts are grouped by title + start_time + end_time.
+ * Dates: mobile "28 Mar 2025, 17:29" or desktop "Aug 11, 2026 at 7:56 AM".
  */
 
 import type {
@@ -99,8 +100,64 @@ function parseNumber(raw: string | undefined): number | undefined {
   return Number.isFinite(value) ? value : undefined
 }
 
+const HEVY_MONTHS: Record<string, number> = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+}
+
+function hevyLocalDateToIso(input: {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+  second: number
+}): string | null {
+  const date = new Date(
+    input.year,
+    input.month,
+    input.day,
+    input.hour,
+    input.minute,
+    input.second
+  )
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString()
+}
+
+function hourFromAmPm(hour12: number, meridiem: string): number | null {
+  if (hour12 < 1 || hour12 > 12) return null
+  const ampm = meridiem.toLowerCase()
+  if (ampm === "am") return hour12 === 12 ? 0 : hour12
+  if (ampm === "pm") return hour12 === 12 ? 12 : hour12 + 12
+  return null
+}
+
 /**
- * Hevy exports dates like "28 Mar 2025, 17:29".
+ * Hevy mobile: "28 Mar 2025, 17:29"
+ * Hevy desktop: "Aug 11, 2026 at 7:56 AM"
  * Also accept ISO strings.
  */
 export function parseHevyDateTime(raw: string): string | null {
@@ -110,52 +167,45 @@ export function parseHevyDateTime(raw: string): string | null {
   const iso = Date.parse(value)
   if (!Number.isNaN(iso)) return new Date(iso).toISOString()
 
-  // 28 Mar 2025, 17:29  |  28 Mar 2025 17:29
-  const match = value.match(
+  // Mobile: 28 Mar 2025, 17:29  |  28 Mar 2025 17:29
+  const mobile = value.match(
     /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/
   )
-  if (!match) return null
-
-  const [, day, mon, year, hour, minute, second] = match
-  const months: Record<string, number> = {
-    jan: 0,
-    january: 0,
-    feb: 1,
-    february: 1,
-    mar: 2,
-    march: 2,
-    apr: 3,
-    april: 3,
-    may: 4,
-    jun: 5,
-    june: 5,
-    jul: 6,
-    july: 6,
-    aug: 7,
-    august: 7,
-    sep: 8,
-    sept: 8,
-    september: 8,
-    oct: 9,
-    october: 9,
-    nov: 10,
-    november: 10,
-    dec: 11,
-    december: 11,
+  if (mobile) {
+    const [, day, mon, year, hour, minute, second] = mobile
+    const month = HEVY_MONTHS[mon!.toLowerCase()]
+    if (month == null) return null
+    return hevyLocalDateToIso({
+      year: Number(year),
+      month,
+      day: Number(day),
+      hour: Number(hour),
+      minute: Number(minute),
+      second: Number(second ?? 0),
+    })
   }
-  const month = months[mon!.toLowerCase()]
-  if (month == null) return null
 
-  const date = new Date(
-    Number(year),
-    month,
-    Number(day),
-    Number(hour),
-    Number(minute),
-    Number(second ?? 0)
+  // Desktop: Aug 11, 2026 at 7:56 AM  |  Aug 11, 2026 at 7:56:00 PM
+  const desktop = value.match(
+    /^([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i
   )
-  if (Number.isNaN(date.getTime())) return null
-  return date.toISOString()
+  if (desktop) {
+    const [, mon, day, year, hour12, minute, second, meridiem] = desktop
+    const month = HEVY_MONTHS[mon!.toLowerCase()]
+    if (month == null) return null
+    const hour = hourFromAmPm(Number(hour12), meridiem!)
+    if (hour == null) return null
+    return hevyLocalDateToIso({
+      year: Number(year),
+      month,
+      day: Number(day),
+      hour,
+      minute: Number(minute),
+      second: Number(second ?? 0),
+    })
+  }
+
+  return null
 }
 
 function lbsToKg(lbs: number): number {

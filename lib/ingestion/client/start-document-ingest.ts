@@ -70,6 +70,14 @@ function isIncompleteIngestResponse(body: IngestProcessApiResponse): boolean {
   if (diagnostics && typeof diagnostics === "object") {
     if (diagnostics.incomplete === true) return true
     if (diagnostics.status === "partial") return true
+    const cloud = diagnostics.cloud_fact_persist
+    if (
+      cloud &&
+      typeof cloud === "object" &&
+      (cloud as { complete?: unknown }).complete === false
+    ) {
+      return true
+    }
   }
   const persist = body.payload?.metadata?.persist
   if (persist && typeof persist === "object") {

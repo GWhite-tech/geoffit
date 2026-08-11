@@ -156,6 +156,9 @@ export async function POST(request: Request) {
           attempt: result.attempt,
           status: result.status,
           incomplete: result.status === "partial",
+          ...(result.facts?.cloudFactPersist
+            ? { cloud_fact_persist: result.facts.cloudFactPersist }
+            : {}),
           facts: result.facts,
           timeline: result.timeline,
         },

@@ -20,8 +20,10 @@ import type {
   ProcessIngestResult,
   TimelineWriter,
 } from "../types"
-import { deferredClientFactWriter } from "../writers/facts"
+import { readCloudFactPersist } from "../writers/cloud-fact-persist"
+import { createRepositoryFactWriter } from "../writers/repository-fact-writer"
 import { noopTimelineWriter } from "../writers/timeline"
+import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-persist-meta"
 import {
   downloadStoredFile,
   loadOwnedFile,
@@ -72,6 +74,83 @@ function parserNameForKind(
   return parserId
 }
 
+function readAppleHealthPersistFromStats(
+  stats: Record<string, unknown> | null | undefined
+): AppleHealthPersistMeta | null {
+  const raw = stats?.apple_health_persist
+  if (!raw || typeof raw !== "object") return null
+  const persist = raw as Partial<AppleHealthPersistMeta>
+  if (
+    typeof persist.bucket !== "string" ||
+    typeof persist.prefix !== "string" ||
+    typeof persist.batchCount !== "number" ||
+    typeof persist.recordsMapped !== "number"
+  ) {
+    return null
+  }
+  return {
+    bucket: persist.bucket,
+    prefix: persist.prefix,
+    batchCount: persist.batchCount,
+    recordsMapped: persist.recordsMapped,
+    complete: persist.complete === true,
+  }
+}
+
+/**
+ * Parse already finished; only cloud_fact_persist remains.
+ * Avoids re-scanning the entire export.zip just to resume cloud upserts.
+ */
+function shouldResumeAppleHealthCloudOnly(
+  documentKind: DocumentKind,
+  stats: Record<string, unknown> | null | undefined
+): boolean {
+  if (documentKind !== "apple_health_export") return false
+  const persist = readAppleHealthPersistFromStats(stats)
+  if (!persist?.complete) return false
+  const cloud = readCloudFactPersist(stats)
+  if (!cloud) return true // parse done, cloud never started
+  return !cloud.complete
+}
+
+function synthesizeAppleHealthCloudResumeParse(
+  stats: Record<string, unknown> | null | undefined
+): ParseResult {
+  const persist = readAppleHealthPersistFromStats(stats)
+  return {
+    success: true,
+    preview: {
+      importerId: "apple-health",
+      fileName: "export.zip",
+      summary: "Resuming Apple Health cloud fact persistence.",
+      recordCount: persist?.recordsMapped ?? 0,
+      categories: [],
+      rows: [],
+      warnings: [],
+    },
+    payload: {
+      fileName: "export.zip",
+      records: [],
+      metadata: {
+        persist,
+        incomplete: false,
+        cloud_resume: true,
+      },
+    },
+    warnings: ["Resuming Apple Health cloud fact persistence."],
+    diagnostics: {
+      incomplete: false,
+      persist,
+      cloud_resume: true,
+    },
+    error: null,
+    contentFingerprint:
+      typeof stats?.content_fingerprint === "string"
+        ? stats.content_fingerprint
+        : null,
+  }
+}
+
 /**
  * Generic processor: load user_files → download → parser → writers → ingest_runs.
  * Idempotent retries: increments attempt; parsers/writers use contentFingerprint.
@@ -80,7 +159,8 @@ export async function processIngestRun(
   options: ProcessIngestOptions
 ): Promise<ProcessIngestResult> {
   const parser = getDocumentParser(options.documentKind)
-  const factWriter = options.factWriter ?? deferredClientFactWriter
+  const factWriter =
+    options.factWriter ?? createRepositoryFactWriter(options.supabase)
   const timelineWriter = options.timelineWriter ?? noopTimelineWriter
 
   console.info(
@@ -174,13 +254,17 @@ async function processIngestRunBody(
     }
   }
 
+  const appleHealthParseIncomplete =
+    prior.stats.apple_health_persist != null &&
+    typeof prior.stats.apple_health_persist === "object" &&
+    (prior.stats.apple_health_persist as { complete?: unknown }).complete ===
+      false
+  const appleHealthCloudIncomplete =
+    shouldResumeAppleHealthCloudOnly(options.documentKind, prior.stats)
   const resumingPartial =
     prior.status === "partial" ||
     (prior.status === "running" &&
-      prior.stats.apple_health_persist != null &&
-      typeof prior.stats.apple_health_persist === "object" &&
-      (prior.stats.apple_health_persist as { complete?: unknown }).complete ===
-        false)
+      (appleHealthParseIncomplete || appleHealthCloudIncomplete))
 
   const attempt = resumingPartial ? Math.max(1, prior.attempt) : prior.attempt + 1
   if (attempt > parser.maxAttempts) {
@@ -220,33 +304,39 @@ async function processIngestRunBody(
     },
   })
 
-  let allBytes: Uint8Array[]
-  try {
-    allBytes = []
-    for (const file of files) {
-      allBytes.push(await downloadStoredFile(options.supabase, file))
-    }
-  } catch (error) {
-    logIngestException(error, options.ingestRunId, "storage_download")
-    const message =
-      error instanceof Error ? error.message : "Storage download failed"
-    const parse = emptyParseFailure(message)
-    await updateIngestRun(options.supabase, {
-      ingestRunId: options.ingestRunId,
-      userId: options.userId,
-      status: "failed",
-      errorSummary: message,
-      finished: true,
-      stats: { ...prior.stats, attempt, file_id: primary.id },
-    })
-    return {
-      ingestRunId: options.ingestRunId,
-      documentKind: options.documentKind,
-      status: "failed",
-      attempt,
-      parse,
-      facts: null,
-      timeline: null,
+  const cloudOnlyResume = shouldResumeAppleHealthCloudOnly(
+    options.documentKind,
+    prior.stats
+  )
+
+  let allBytes: Uint8Array[] = []
+  if (!cloudOnlyResume) {
+    try {
+      for (const file of files) {
+        allBytes.push(await downloadStoredFile(options.supabase, file))
+      }
+    } catch (error) {
+      logIngestException(error, options.ingestRunId, "storage_download")
+      const message =
+        error instanceof Error ? error.message : "Storage download failed"
+      const parse = emptyParseFailure(message)
+      await updateIngestRun(options.supabase, {
+        ingestRunId: options.ingestRunId,
+        userId: options.userId,
+        status: "failed",
+        errorSummary: message,
+        finished: true,
+        stats: { ...prior.stats, attempt, file_id: primary.id },
+      })
+      return {
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        status: "failed",
+        attempt,
+        parse,
+        facts: null,
+        timeline: null,
+      }
     }
   }
 
@@ -262,30 +352,42 @@ async function processIngestRunBody(
       parserId: parser.id,
       documentKind: options.documentKind,
       isBloodLabPdfParser: parser.id === "parser.blood_lab_pdf",
+      cloudOnlyResume,
     })
   )
 
   let parse: ParseResult
-  try {
-    parse = await parser.parse({
-      supabase: options.supabase,
-      userId: options.userId,
-      documentKind: options.documentKind,
-      file: primary,
-      files,
-      bytes: allBytes[0]!,
-      allBytes,
-      ingestRunId: options.ingestRunId,
-      attempt,
-      signal: options.signal,
-      priorStats: prior.stats,
-    })
-  } catch (error) {
-    // Raw exception first — do not map before this log.
-    logIngestException(error, options.ingestRunId, "parser")
-    parse = emptyParseFailure(
-      error instanceof Error ? error.message : "Parser threw unexpectedly."
+  if (cloudOnlyResume) {
+    console.info(
+      "APPLE_HEALTH_CLOUD_RESUME",
+      JSON.stringify({
+        ingestRunId: options.ingestRunId,
+        cloud_fact_persist: prior.stats?.cloud_fact_persist ?? null,
+      })
     )
+    parse = synthesizeAppleHealthCloudResumeParse(prior.stats)
+  } else {
+    try {
+      parse = await parser.parse({
+        supabase: options.supabase,
+        userId: options.userId,
+        documentKind: options.documentKind,
+        file: primary,
+        files,
+        bytes: allBytes[0]!,
+        allBytes,
+        ingestRunId: options.ingestRunId,
+        attempt,
+        signal: options.signal,
+        priorStats: prior.stats,
+      })
+    } catch (error) {
+      // Raw exception first — do not map before this log.
+      logIngestException(error, options.ingestRunId, "parser")
+      parse = emptyParseFailure(
+        error instanceof Error ? error.message : "Parser threw unexpectedly."
+      )
+    }
   }
 
   const failedStage =
@@ -319,13 +421,13 @@ async function processIngestRunBody(
   let timeline = null
   let domainReplayPersist: DomainReplayPersistMeta | null = null
 
-  const incomplete =
+  const parseIncomplete =
     parse.success &&
     parse.diagnostics != null &&
     typeof parse.diagnostics === "object" &&
     parse.diagnostics.incomplete === true
 
-  if (parse.success && !incomplete) {
+  if (parse.success && !parseIncomplete) {
     try {
       facts = await factWriter.write({
         userId: options.userId,
@@ -333,7 +435,20 @@ async function processIngestRunBody(
         documentKind: options.documentKind,
         parseResult: parse,
         contentFingerprint,
+        userFileId: options.fileId,
+        priorStats: prior.stats,
       })
+
+      if (
+        (options.documentKind === "blood_lab_pdf" ||
+          options.documentKind === "hevy_csv") &&
+        facts.errors.length > 0
+      ) {
+        throw new Error(
+          `Cloud FactWriter failed: ${facts.errors.join("; ")}`
+        )
+      }
+
       timeline = await timelineWriter.write({
         userId: options.userId,
         ingestRunId: options.ingestRunId,
@@ -373,6 +488,9 @@ async function processIngestRunBody(
     }
   }
 
+  const cloudIncomplete = facts?.incomplete === true
+  const incomplete = parseIncomplete || cloudIncomplete
+
   const status = parse.success
     ? incomplete
       ? "partial"
@@ -395,19 +513,35 @@ async function processIngestRunBody(
       : null
   const effectiveDomainReplay = domainReplayPersist ?? priorDomainReplay
 
-  const diagnosticsJson =
-    effectiveDomainReplay != null
+  const cloudFactPersist =
+    facts?.cloudFactPersist ??
+    readCloudFactPersist(prior.stats) ??
+    null
+
+  const diagnosticsJson = {
+    ...(baseDiagnostics ?? {}),
+    ...(effectiveDomainReplay != null
+      ? { domain_replay_persist: effectiveDomainReplay }
+      : {}),
+    ...(cloudFactPersist != null
       ? {
-          ...(baseDiagnostics ?? {}),
-          domain_replay_persist: effectiveDomainReplay,
+          cloud_fact_persist: cloudFactPersist,
+          incomplete: incomplete || baseDiagnostics?.incomplete === true,
         }
-      : baseDiagnostics
+      : {}),
+  }
+  const diagnosticsForUpdate =
+    Object.keys(diagnosticsJson).length > 0 ? diagnosticsJson : baseDiagnostics
+  const diagnosticsRecord =
+    diagnosticsForUpdate && typeof diagnosticsForUpdate === "object"
+      ? (diagnosticsForUpdate as Record<string, unknown>)
+      : null
 
   const persistMeta =
-    diagnosticsJson &&
-    diagnosticsJson.persist &&
-    typeof diagnosticsJson.persist === "object"
-      ? (diagnosticsJson.persist as Record<string, unknown>)
+    diagnosticsRecord &&
+    diagnosticsRecord.persist &&
+    typeof diagnosticsRecord.persist === "object"
+      ? (diagnosticsRecord.persist as Record<string, unknown>)
       : null
 
   await updateIngestRun(options.supabase, {
@@ -416,11 +550,13 @@ async function processIngestRunBody(
     status,
     errorSummary: parse.success
       ? incomplete
-        ? "Parse paused under server time limit; continue required."
+        ? cloudIncomplete && !parseIncomplete
+          ? "Apple Health cloud fact persistence paused; continue required."
+          : "Parse paused under server time limit; continue required."
         : null
       : parse.error,
     finished: !incomplete,
-    diagnosticsJson,
+    diagnosticsJson: diagnosticsForUpdate,
     stats: {
       ...prior.stats,
       attempt,
@@ -429,6 +565,7 @@ async function processIngestRunBody(
       parser_id: parser.id,
       content_fingerprint: contentFingerprint,
       apple_health_persist: persistMeta,
+      cloud_fact_persist: cloudFactPersist,
       blood_persist:
         options.documentKind === "blood_lab_pdf"
           ? (domainReplayPersist ?? prior.stats.blood_persist ?? null)
@@ -438,17 +575,19 @@ async function processIngestRunBody(
           ? (domainReplayPersist ?? prior.stats.hevy_persist ?? null)
           : (prior.stats.hevy_persist ?? null),
       // Keep a compact pointer in stats; full payload lives on diagnostics_json.
-      diagnostics_summary: diagnosticsJson
+      diagnostics_summary: diagnosticsRecord
         ? {
-            parser_name: diagnosticsJson.parser_name ?? null,
-            parser_version: diagnosticsJson.parser_version ?? null,
-            failed_stage: diagnosticsJson.failed_stage ?? null,
-            total_characters: diagnosticsJson.total_characters ?? null,
-            biomarkers_found: diagnosticsJson.biomarkers_found ?? null,
-            incomplete: diagnosticsJson.incomplete ?? null,
-            records_mapped: diagnosticsJson.recordsMapped ?? null,
+            parser_name: diagnosticsRecord.parser_name ?? null,
+            parser_version: diagnosticsRecord.parser_version ?? null,
+            failed_stage: diagnosticsRecord.failed_stage ?? null,
+            total_characters: diagnosticsRecord.total_characters ?? null,
+            biomarkers_found: diagnosticsRecord.biomarkers_found ?? null,
+            incomplete: incomplete,
+            records_mapped: diagnosticsRecord.recordsMapped ?? null,
             domain_replay_kind: effectiveDomainReplay?.kind ?? null,
             domain_replay_items: effectiveDomainReplay?.itemCount ?? null,
+            cloud_fact_complete: cloudFactPersist?.complete ?? null,
+            cloud_fact_next_batch: cloudFactPersist?.nextBatchIndex ?? null,
           }
         : null,
       facts_written: facts?.written ?? 0,

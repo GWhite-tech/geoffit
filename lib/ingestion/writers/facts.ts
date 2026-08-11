@@ -11,6 +11,7 @@ export const noopCloudFactWriter: FactWriter = {
 /**
  * Bridge: persistence is deferred to confirmParsedImport (client stores).
  * Parse stage must not double-write; this writer records intent only.
+ * Kept available for tests / injection; production default is repository FactWriter.
  */
 export const deferredClientFactWriter: FactWriter = {
   id: "deferred-client-facts",

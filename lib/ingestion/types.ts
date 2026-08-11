@@ -80,6 +80,20 @@ export type FactWriteResult = {
   written: number
   skipped: number
   errors: string[]
+  /** Apple Health cloud persist still has Storage batches remaining. */
+  incomplete?: boolean
+  /** Cursor for ingest_runs.stats.cloud_fact_persist (AH). */
+  cloudFactPersist?: {
+    version: 1
+    documentKind: "apple_health_export"
+    nextBatchIndex: number
+    batchCount: number
+    recordsWritten: number
+    workoutsWritten: number
+    nutritionDaysWritten: number
+    complete: boolean
+    lastError: string | null
+  } | null
 }
 
 export type TimelineWriteResult = {
@@ -96,6 +110,9 @@ export type FactWriter = {
     documentKind: DocumentKind
     parseResult: ParseResult
     contentFingerprint: string | null
+    /** Optional — repository FactWriter uses for lineage + AH resume. */
+    userFileId?: string
+    priorStats?: Record<string, unknown> | null
   }) => Promise<FactWriteResult>
 }
 

@@ -101,11 +101,10 @@ export async function writeDomainReplayPersist(input: {
     items,
   }
 
-  // raw-ingest / lab-pdfs typically allow application/octet-stream (not json).
   const { error } = await input.supabase.storage
     .from(input.bucket)
     .upload(meta.path, JSON.stringify(body), {
-      contentType: "application/octet-stream",
+      contentType: "application/json",
       upsert: false,
     })
 

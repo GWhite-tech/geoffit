@@ -221,7 +221,7 @@ export async function ensureDomainReplayPersist(input: {
     const { error } = await input.supabase.storage
       .from(bucket)
       .upload(meta.path, JSON.stringify(body), {
-        contentType: "application/octet-stream",
+        contentType: "application/json",
         upsert: false,
       })
     if (error && !isAlreadyExistsError(error)) {

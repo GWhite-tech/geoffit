@@ -8,9 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "test:blood-pdf": "CI=true tsx --test lib/importers/blood-tests/pipeline/blood-lab-fixtures.test.ts",
-    "test:cloud": "CI=true tsx --test lib/cloud/**/*.test.ts lib/ingestion/writers/**/*.test.ts",
+    "test:cloud": "CI=true tsx --test lib/cloud/**/*.test.ts lib/coach/**/*.test.ts lib/ingestion/writers/**/*.test.ts",
     "doctor:pdf": "tsx scripts/doctor-pdf.ts",
-    "fixture:numan-blood": "node scripts/generate-numan-blood-fixture.mjs"
+    "fixture:numan-blood": "node scripts/generate-numan-blood-fixture.mjs",
+    "test:coach-rls:local": "docker exec -i supabase_db_geoffit psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/verify-coach-rls-local.sql"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

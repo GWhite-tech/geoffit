@@ -1,5 +1,5 @@
 /**
- * Cloud fact repository layer (PR2).
+ * Cloud fact repository layer (PR2) + page-scoped Mission Control reads.
  * Repositories + mappers only — no product call sites, no FactWriter wiring.
  */
 
@@ -7,13 +7,18 @@ export { CloudRepositoryError, mapSupabaseError } from "./errors"
 export type { CloudRepositoryErrorCode } from "./errors"
 export { createCloudRepositories } from "./supabase/create-repos"
 export type {
+  BloodListPanelsOptions,
   BloodRepository,
   CloudRepositories,
   FactSyncRepository,
+  HealthListByMetricsOptions,
   HealthRepository,
   NutritionRepository,
   TreatmentGraph,
+  TreatmentListGraphOptions,
   TreatmentRepository,
+  WorkoutListByStartRangeOptions,
+  WorkoutListByStartRangeResult,
   WorkoutRepository,
 } from "./repositories/types"
 export type {

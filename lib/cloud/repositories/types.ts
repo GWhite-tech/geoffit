@@ -21,6 +21,16 @@ import type {
   WriteContext,
 } from "../types"
 
+export type HealthListByMetricsOptions = {
+  metricTypes: string[]
+  /** Inclusive lower bound on start_at (ISO). */
+  startAt?: string | null
+  /** Inclusive upper bound on start_at (ISO). */
+  endAt?: string | null
+  /** Hard cap on rows returned (repository clamps). */
+  limit?: number
+}
+
 export interface HealthRepository {
   upsertMany(
     records: HealthRecord[],
@@ -31,10 +41,27 @@ export interface HealthRepository {
     cursor: SyncCursor | null,
     limit: number
   ): Promise<ListPage<HealthRecord>>
+  /**
+   * Page-scoped read: metric types + optional time window (PR4 Stage 5).
+   * Never a full-table dump.
+   */
+  listByMetricTypes(
+    userId: string,
+    options: HealthListByMetricsOptions
+  ): Promise<HealthRecord[]>
   softDeleteByFingerprints(
     userId: string,
     fingerprints: string[]
   ): Promise<number>
+}
+
+export type BloodListPanelsOptions = {
+  /** Max panels to return (capped by repository). Default 100. */
+  limit?: number
+  /** Inclusive YYYY-MM-DD lower bound on test_date. */
+  fromDate?: string
+  /** Inclusive YYYY-MM-DD upper bound on test_date. */
+  toDate?: string
 }
 
 export interface BloodRepository {
@@ -44,10 +71,29 @@ export interface BloodRepository {
     cursor: SyncCursor | null,
     limit: number
   ): Promise<ListPage<BloodTest>>
+  /**
+   * Page-scoped read: recent blood panels + markers (PR4).
+   * Never a sync dump — ordered by test_date desc with a hard limit.
+   */
+  listPanels(
+    userId: string,
+    options?: BloodListPanelsOptions
+  ): Promise<BloodTest[]>
   softDeleteByFingerprints(
     userId: string,
     fingerprints: string[]
   ): Promise<number>
+}
+
+export type WorkoutListByStartRangeOptions = {
+  startAt?: string | null
+  endAt?: string | null
+  limit?: number
+}
+
+export type WorkoutListByStartRangeResult = {
+  hevy: HevyWorkoutEntry[]
+  appleHealth: WorkoutHealthRecord[]
 }
 
 export interface WorkoutRepository {
@@ -64,6 +110,14 @@ export interface WorkoutRepository {
     cursor: SyncCursor | null,
     limit: number
   ): Promise<ListPage<HevyWorkoutEntry | WorkoutHealthRecord>>
+  /**
+   * Page-scoped workouts by start_at (PR4 Stage 5).
+   * Splits Hevy vs Apple Health for Mission Control consumers.
+   */
+  listByStartRange(
+    userId: string,
+    options?: WorkoutListByStartRangeOptions
+  ): Promise<WorkoutListByStartRangeResult>
   softDeleteByFingerprints(
     userId: string,
     fingerprints: string[]
@@ -76,6 +130,14 @@ export type TreatmentGraph = {
   doseEvents: DoseEvent[]
 }
 
+export type TreatmentListGraphOptions = {
+  treatmentLimit?: number
+  doseLimit?: number
+  lotLimit?: number
+  /** When true, also load inventory lots (Treatment page). MC omits lots. */
+  includeLots?: boolean
+}
+
 export interface TreatmentRepository {
   upsertGraph(graph: TreatmentGraph, ctx: WriteContext): Promise<UpsertResult>
   listUpdatedSince(
@@ -83,6 +145,14 @@ export interface TreatmentRepository {
     cursor: SyncCursor | null,
     limit: number
   ): Promise<ListPage<Treatment>>
+  /**
+   * Small treatment graph for Mission Control timeline (PR4 Stage 5).
+   * Lots omitted unless includeLots — doses + treatments are enough for MC.
+   */
+  listGraph(
+    userId: string,
+    options?: TreatmentListGraphOptions
+  ): Promise<TreatmentGraph>
 }
 
 export interface NutritionRepository {

@@ -245,3 +245,61 @@ export function treatmentFromRow(row: TreatmentRow): Treatment {
         : undefined,
   }
 }
+
+export function treatmentLotFromRow(
+  row: TreatmentLotRow,
+  treatmentLocalId: string
+): InventoryLot {
+  const localId =
+    typeof row.payload.local_id === "string" ? row.payload.local_id : row.id
+  const localFingerprint =
+    typeof row.payload.local_fingerprint === "string"
+      ? row.payload.local_fingerprint
+      : row.fingerprint
+  return {
+    id: localId,
+    treatmentId: treatmentLocalId,
+    batchNumber: row.batch_number ?? undefined,
+    supplier: row.supplier ?? undefined,
+    receivedDate: row.received_date ?? new Date().toISOString().slice(0, 10),
+    expiry: row.expiry ?? undefined,
+    storageLocation:
+      (row.storage_location as InventoryLot["storageLocation"]) ?? "fridge",
+    quantity: row.quantity,
+    quantityUnit: (row.quantity_unit as InventoryLot["quantityUnit"]) || "vials",
+    status: row.status as InventoryLot["status"],
+    notes: row.notes ?? undefined,
+    fingerprint: localFingerprint,
+    reconstitution: row.payload.reconstitution as InventoryLot["reconstitution"],
+  }
+}
+
+export function treatmentDoseFromRow(
+  row: TreatmentDoseEventRow,
+  treatmentLocalId: string
+): DoseEvent {
+  const localId =
+    typeof row.payload.local_id === "string" ? row.payload.local_id : row.id
+  const localFingerprint =
+    typeof row.payload.local_fingerprint === "string"
+      ? row.payload.local_fingerprint
+      : row.fingerprint
+  const lotLocalId =
+    typeof row.payload.lot_local_id === "string"
+      ? row.payload.lot_local_id
+      : undefined
+  return {
+    id: localId,
+    treatmentId: treatmentLocalId,
+    kind: row.kind as DoseEvent["kind"],
+    date: row.event_date,
+    scheduledTime: row.scheduled_time ?? undefined,
+    recordedAt: row.recorded_at,
+    dose: row.dose ?? undefined,
+    doseUnit: row.dose_unit ?? undefined,
+    injectionUnits: row.injection_units ?? undefined,
+    notes: row.notes ?? undefined,
+    lotId: lotLocalId,
+    fingerprint: localFingerprint,
+  }
+}

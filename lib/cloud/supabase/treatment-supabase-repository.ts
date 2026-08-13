@@ -6,15 +6,20 @@ import {
   treatmentLotCloudFingerprint,
 } from "../mappers/fingerprints"
 import {
+  treatmentDoseFromRow,
   treatmentDoseToInsertRow,
   treatmentFromRow,
+  treatmentLotFromRow,
   treatmentLotToInsertRow,
   treatmentToInsertRow,
   treatmentToUpdatePatch,
+  type TreatmentDoseEventRow,
+  type TreatmentLotRow,
   type TreatmentRow,
 } from "../mappers/treatment-mapper"
 import type {
   TreatmentGraph,
+  TreatmentListGraphOptions,
   TreatmentRepository,
 } from "../repositories/types"
 import type { Treatment } from "@/lib/domain/treatment"
@@ -31,6 +36,10 @@ import {
 const TREATMENTS = "treatments"
 const LOTS = "treatment_lots"
 const DOSES = "treatment_dose_events"
+
+export const TREATMENT_LIST_MAX = 100
+export const TREATMENT_DOSE_LIST_MAX = 80
+export const TREATMENT_LOT_LIST_MAX = 200
 
 export function createTreatmentSupabaseRepository(
   supabase: SupabaseClient
@@ -219,6 +228,86 @@ export function createTreatmentSupabaseRepository(
       return {
         rows: page.rows.map(treatmentFromRow),
         next: page.next,
+      }
+    },
+
+    async listGraph(
+      userId: string,
+      options?: TreatmentListGraphOptions
+    ): Promise<TreatmentGraph> {
+      const treatmentLimit = Math.max(
+        1,
+        Math.min(
+          Math.floor(options?.treatmentLimit ?? 50),
+          TREATMENT_LIST_MAX
+        )
+      )
+      const doseLimit = Math.max(
+        1,
+        Math.min(Math.floor(options?.doseLimit ?? 40), TREATMENT_DOSE_LIST_MAX)
+      )
+      const lotLimit = Math.max(
+        1,
+        Math.min(Math.floor(options?.lotLimit ?? 100), TREATMENT_LOT_LIST_MAX)
+      )
+      const includeLots = options?.includeLots === true
+
+      const { data: treatmentRows, error: treatmentError } = await supabase
+        .from(TREATMENTS)
+        .select("*")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .order("sort_order", { ascending: true })
+        .order("updated_at", { ascending: false })
+        .limit(treatmentLimit)
+      if (treatmentError) throw mapSupabaseError(treatmentError)
+
+      const rows = (treatmentRows ?? []) as TreatmentRow[]
+      const treatments = rows.map(treatmentFromRow)
+      const cloudIdToLocal = new Map(
+        rows.map((row, i) => [row.id, treatments[i]!.id] as const)
+      )
+
+      const { data: doseRows, error: doseError } = await supabase
+        .from(DOSES)
+        .select("*")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .order("recorded_at", { ascending: false })
+        .limit(doseLimit)
+      if (doseError) throw mapSupabaseError(doseError)
+
+      const doseEvents = ((doseRows ?? []) as TreatmentDoseEventRow[])
+        .map((row) => {
+          const localTreatmentId = cloudIdToLocal.get(row.treatment_id)
+          if (!localTreatmentId) return null
+          return treatmentDoseFromRow(row, localTreatmentId)
+        })
+        .filter((event): event is NonNullable<typeof event> => event != null)
+
+      let lots: TreatmentGraph["lots"] = []
+      if (includeLots) {
+        const { data: lotRows, error: lotError } = await supabase
+          .from(LOTS)
+          .select("*")
+          .eq("user_id", userId)
+          .is("deleted_at", null)
+          .order("updated_at", { ascending: false })
+          .limit(lotLimit)
+        if (lotError) throw mapSupabaseError(lotError)
+        lots = ((lotRows ?? []) as TreatmentLotRow[])
+          .map((row) => {
+            const localTreatmentId = cloudIdToLocal.get(row.treatment_id)
+            if (!localTreatmentId) return null
+            return treatmentLotFromRow(row, localTreatmentId)
+          })
+          .filter((lot): lot is NonNullable<typeof lot> => lot != null)
+      }
+
+      return {
+        treatments,
+        lots,
+        doseEvents,
       }
     },
   }

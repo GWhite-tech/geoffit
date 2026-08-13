@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { WorkoutHealthRecord } from "@/lib/domain/health"
 import type { HevyWorkoutEntry } from "@/lib/health/workout/workout-store"
 
+import { mapSupabaseError } from "../errors"
 import {
   appleHealthWorkoutCloudFingerprint,
   hevyWorkoutCloudFingerprint,
@@ -16,7 +17,11 @@ import {
   hevyWorkoutToUpdatePatch,
   type WorkoutRow,
 } from "../mappers/workout-mapper"
-import type { WorkoutRepository } from "../repositories/types"
+import type {
+  WorkoutListByStartRangeOptions,
+  WorkoutListByStartRangeResult,
+  WorkoutRepository,
+} from "../repositories/types"
 import type { ListPage, SyncCursor, UpsertResult, WriteContext } from "../types"
 import {
   emptyUpsertResult,
@@ -29,6 +34,17 @@ import {
 } from "./upsert"
 
 const TABLE = "workouts"
+
+export const WORKOUT_LIST_BY_START_MAX = 200
+const WORKOUT_LIST_BY_START_DEFAULT = 100
+
+function clampWorkoutLimit(limit: number | undefined): number {
+  const n =
+    typeof limit === "number" && Number.isFinite(limit)
+      ? limit
+      : WORKOUT_LIST_BY_START_DEFAULT
+  return Math.max(1, Math.min(Math.floor(n), WORKOUT_LIST_BY_START_MAX))
+}
 
 export function createWorkoutSupabaseRepository(
   supabase: SupabaseClient
@@ -122,6 +138,42 @@ export function createWorkoutSupabaseRepository(
           : appleHealthWorkoutRecordFromRow(row)
       )
       return { rows, next: page.next }
+    },
+
+    async listByStartRange(
+      userId: string,
+      options?: WorkoutListByStartRangeOptions
+    ): Promise<WorkoutListByStartRangeResult> {
+      const limit = clampWorkoutLimit(options?.limit)
+      let query = supabase
+        .from(TABLE)
+        .select("*")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .order("start_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(limit)
+
+      if (options?.startAt) {
+        query = query.gte("start_at", options.startAt)
+      }
+      if (options?.endAt) {
+        query = query.lte("start_at", options.endAt)
+      }
+
+      const { data, error } = await query
+      if (error) throw mapSupabaseError(error)
+
+      const hevy: HevyWorkoutEntry[] = []
+      const appleHealth: WorkoutHealthRecord[] = []
+      for (const row of (data ?? []) as WorkoutRow[]) {
+        if (row.source === "hevy") {
+          hevy.push(hevyWorkoutFromRow(row))
+        } else {
+          appleHealth.push(appleHealthWorkoutRecordFromRow(row))
+        }
+      }
+      return { hevy, appleHealth }
     },
 
     softDeleteByFingerprints(userId, fingerprints) {

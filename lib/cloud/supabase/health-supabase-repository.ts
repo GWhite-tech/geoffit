@@ -2,13 +2,17 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { HealthRecord } from "@/lib/domain/health"
 
+import { mapSupabaseError } from "../errors"
 import {
   healthRecordFromRow,
   healthRecordToInsertRow,
   healthRecordToUpdatePatch,
   type HealthRecordRow,
 } from "../mappers/health-mapper"
-import type { HealthRepository } from "../repositories/types"
+import type {
+  HealthListByMetricsOptions,
+  HealthRepository,
+} from "../repositories/types"
 import type { ListPage, SyncCursor, UpsertResult, WriteContext } from "../types"
 import {
   emptyUpsertResult,
@@ -22,6 +26,18 @@ import {
 
 const TABLE = "health_records"
 const BATCH = 500
+
+/** Hard cap — Mission Control / page reads must never dump full history. */
+export const HEALTH_LIST_BY_METRICS_MAX = 3000
+const HEALTH_LIST_BY_METRICS_DEFAULT = 1500
+
+function clampHealthLimit(limit: number | undefined): number {
+  const n =
+    typeof limit === "number" && Number.isFinite(limit)
+      ? limit
+      : HEALTH_LIST_BY_METRICS_DEFAULT
+  return Math.max(1, Math.min(Math.floor(n), HEALTH_LIST_BY_METRICS_MAX))
+}
 
 export function createHealthSupabaseRepository(
   supabase: SupabaseClient
@@ -80,6 +96,38 @@ export function createHealthSupabaseRepository(
         rows: page.rows.map(healthRecordFromRow),
         next: page.next,
       }
+    },
+
+    async listByMetricTypes(
+      userId: string,
+      options: HealthListByMetricsOptions
+    ): Promise<HealthRecord[]> {
+      const types = [...new Set(options.metricTypes.map((t) => t.trim()))].filter(
+        Boolean
+      )
+      if (types.length === 0) return []
+      const limit = clampHealthLimit(options.limit)
+
+      let query = supabase
+        .from(TABLE)
+        .select("*")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .in("metric_type", types)
+        .order("start_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(limit)
+
+      if (options.startAt) {
+        query = query.gte("start_at", options.startAt)
+      }
+      if (options.endAt) {
+        query = query.lte("start_at", options.endAt)
+      }
+
+      const { data, error } = await query
+      if (error) throw mapSupabaseError(error)
+      return ((data ?? []) as HealthRecordRow[]).map(healthRecordFromRow)
     },
 
     softDeleteByFingerprints(userId, fingerprints) {

@@ -12,7 +12,10 @@ import {
   type BloodPanelRow,
   type BloodResultRow,
 } from "../mappers/blood-mapper"
-import type { BloodRepository } from "../repositories/types"
+import type {
+  BloodListPanelsOptions,
+  BloodRepository,
+} from "../repositories/types"
 import type { ListPage, SyncCursor, UpsertResult, WriteContext } from "../types"
 import {
   emptyUpsertResult,
@@ -26,6 +29,45 @@ import {
 
 const PANELS = "blood_panels"
 const RESULTS = "blood_results"
+
+/** Hard cap — page reads must never dump unbounded history. */
+export const BLOOD_LIST_PANELS_MAX = 200
+const BLOOD_LIST_PANELS_DEFAULT = 100
+
+function clampPanelLimit(limit: number | undefined): number {
+  const n =
+    typeof limit === "number" && Number.isFinite(limit)
+      ? limit
+      : BLOOD_LIST_PANELS_DEFAULT
+  return Math.max(1, Math.min(Math.floor(n), BLOOD_LIST_PANELS_MAX))
+}
+
+async function loadTestsForPanels(
+  supabase: SupabaseClient,
+  userId: string,
+  panels: BloodPanelRow[]
+): Promise<BloodTest[]> {
+  if (panels.length === 0) return []
+  const panelIds = panels.map((p) => p.id)
+  const { data, error } = await supabase
+    .from(RESULTS)
+    .select("*")
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .in("panel_id", panelIds)
+  if (error) throw mapSupabaseError(error)
+
+  const byPanel = new Map<string, BloodResultRow[]>()
+  for (const row of (data ?? []) as BloodResultRow[]) {
+    const list = byPanel.get(row.panel_id) ?? []
+    list.push(row)
+    byPanel.set(row.panel_id, list)
+  }
+
+  return panels.map((panel) =>
+    bloodTestFromRows(panel, byPanel.get(panel.id) ?? [])
+  )
+}
 
 export function createBloodSupabaseRepository(
   supabase: SupabaseClient
@@ -117,20 +159,38 @@ export function createBloodSupabaseRepository(
         cursor,
         limit
       )
-      const tests: BloodTest[] = []
-      for (const panel of page.rows) {
-        const { data, error } = await supabase
-          .from(RESULTS)
-          .select("*")
-          .eq("user_id", userId)
-          .eq("panel_id", panel.id)
-          .is("deleted_at", null)
-        if (error) throw mapSupabaseError(error)
-        tests.push(
-          bloodTestFromRows(panel, (data ?? []) as BloodResultRow[])
-        )
-      }
+      const tests = await loadTestsForPanels(supabase, userId, page.rows)
       return { rows: tests, next: page.next }
+    },
+
+    async listPanels(
+      userId: string,
+      options?: BloodListPanelsOptions
+    ): Promise<BloodTest[]> {
+      const limit = clampPanelLimit(options?.limit)
+      let query = supabase
+        .from(PANELS)
+        .select("*")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .order("test_date", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(limit)
+
+      if (options?.fromDate) {
+        query = query.gte("test_date", options.fromDate.slice(0, 10))
+      }
+      if (options?.toDate) {
+        query = query.lte("test_date", options.toDate.slice(0, 10))
+      }
+
+      const { data, error } = await query
+      if (error) throw mapSupabaseError(error)
+      return loadTestsForPanels(
+        supabase,
+        userId,
+        (data ?? []) as BloodPanelRow[]
+      )
     },
 
     softDeleteByFingerprints(userId, fingerprints) {

@@ -11,8 +11,88 @@ import {
 } from "@/lib/domain/health"
 import type { NutritionDay, NutritionSource } from "@/lib/domain/nutrition"
 
-function dayKey(iso: string): string {
+/**
+ * Calendar day for Apple Health nutrition rollups.
+ * Preserves existing semantics: first 10 chars of the ISO startDate string
+ * (Apple Health mapper stores UTC via `toISOString()`, so this is the UTC date).
+ */
+export function nutritionDayKeyFromStartDate(iso: string): string {
   return iso.slice(0, 10)
+}
+
+function dayKey(iso: string): string {
+  return nutritionDayKeyFromStartDate(iso)
+}
+
+/**
+ * UTC inclusive window matching `nutritionDayKeyFromStartDate` for ISO-Z timestamps.
+ * Do not replace with a local-timezone day boundary.
+ */
+export function nutritionDayUtcBounds(date: string): {
+  startAt: string
+  endAt: string
+} {
+  return {
+    startAt: `${date}T00:00:00.000Z`,
+    endAt: `${date}T23:59:59.999Z`,
+  }
+}
+
+/** Dates touched by dietary quantity samples in this record set (sorted). */
+export function dietaryDayKeysFromHealthRecords(
+  records: HealthRecord[]
+): string[] {
+  const keys = new Set<string>()
+  for (const record of dietaryRecordsFromHealth(records)) {
+    keys.add(dayKey(record.startDate))
+  }
+  return [...keys].sort()
+}
+
+/** Clinical equality for nutrition_day rows — not fingerprint identity. */
+export function nutritionDaysClinicallyEqual(
+  a: Pick<
+    NutritionDay,
+    | "date"
+    | "calories"
+    | "protein"
+    | "carbohydrates"
+    | "fat"
+    | "fibre"
+    | "water"
+    | "sugar"
+    | "sodium"
+    | "alcohol"
+    | "caffeine"
+  >,
+  b: Pick<
+    NutritionDay,
+    | "date"
+    | "calories"
+    | "protein"
+    | "carbohydrates"
+    | "fat"
+    | "fibre"
+    | "water"
+    | "sugar"
+    | "sodium"
+    | "alcohol"
+    | "caffeine"
+  >
+): boolean {
+  return (
+    a.date === b.date &&
+    a.calories === b.calories &&
+    a.protein === b.protein &&
+    a.carbohydrates === b.carbohydrates &&
+    a.fat === b.fat &&
+    a.fibre === b.fibre &&
+    a.water === b.water &&
+    (a.sugar ?? 0) === (b.sugar ?? 0) &&
+    (a.sodium ?? 0) === (b.sodium ?? 0) &&
+    (a.alcohol ?? 0) === (b.alcohol ?? 0) &&
+    (a.caffeine ?? 0) === (b.caffeine ?? 0)
+  )
 }
 
 /** Convert a raw HealthKit sample into the unit used on NutritionDay. */

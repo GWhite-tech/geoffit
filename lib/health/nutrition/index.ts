@@ -11,7 +11,23 @@ export {
   useNutritionAnchor,
   setNutritionTargets,
 } from "./use-nutrition"
-export { buildNutritionDaysFromHealthRecords } from "./from-health-store"
+export {
+  buildNutritionDaysFromHealthRecords,
+  dietaryDayKeysFromHealthRecords,
+  nutritionDayKeyFromStartDate,
+  nutritionDayUtcBounds,
+  nutritionDaysClinicallyEqual,
+} from "./from-health-store"
+export {
+  createSupabaseDietaryDayLister,
+  listAllDietaryHealthRecordsForDay,
+  NUTRITION_DIETARY_DAY_PAGE_SIZE,
+  recomputeNutritionDaysFromDurableHealth,
+} from "./recompute-nutrition-days"
+export type {
+  DietaryDayListStats,
+  DietaryDayLister,
+} from "./recompute-nutrition-days"
 export {
   buildNutritionSummary,
   buildNutritionChartData,

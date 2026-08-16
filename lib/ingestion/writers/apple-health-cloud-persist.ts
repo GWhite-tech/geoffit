@@ -10,7 +10,10 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createCloudRepositories } from "@/lib/cloud"
 import type { WriteContext } from "@/lib/cloud"
 import type { HealthRecord, WorkoutHealthRecord } from "@/lib/domain/health"
-import { buildNutritionDaysFromHealthRecords } from "@/lib/health/nutrition/from-health-store"
+import {
+  createSupabaseDietaryDayLister,
+  recomputeNutritionDaysFromDurableHealth,
+} from "@/lib/health/nutrition/recompute-nutrition-days"
 import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-persist-meta"
 
 import {
@@ -149,16 +152,20 @@ export async function persistAppleHealthBatchesToCloud(input: {
           state.workoutsWritten += workoutResult.written
         }
 
-        const nutritionDays = buildNutritionDaysFromHealthRecords(batch)
-        if (nutritionDays.length > 0) {
-          const nutritionResult = await repos.nutrition.upsertMany(
-            nutritionDays,
-            input.ctx
-          )
-          written += nutritionResult.written
-          skipped += nutritionResult.skipped
-          state.nutritionDaysWritten += nutritionResult.written
-        }
+        // Nutrition days are day rollups — never trust a single Storage batch.
+        // Recompute affected dates from ALL durable dietary health_records.
+        const nutritionResult = await recomputeNutritionDaysFromDurableHealth({
+          userId: input.ctx.userId,
+          batch,
+          nutrition: repos.nutrition,
+          ctx: input.ctx,
+          listDietaryRecordsForDay: createSupabaseDietaryDayLister(
+            input.supabase
+          ),
+        })
+        written += nutritionResult.written
+        skipped += nutritionResult.skipped
+        state.nutritionDaysWritten += nutritionResult.written
       }
 
       // Advance only after successful processing of this batch.

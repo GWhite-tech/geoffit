@@ -30,14 +30,20 @@ describe("coach permission categories", () => {
   it("maps every HealthMetricType to exactly one coach category", () => {
     const metrics = Object.keys(HEALTH_METRIC_LABELS) as HealthMetricType[]
     for (const metric of metrics) {
+      const category = coachCategoryForMetric(metric)
       assert.ok(
-        isCoachPermissionCategory(HEALTH_METRIC_COACH_CATEGORY[metric]),
+        category != null && isCoachPermissionCategory(category),
         `missing mapping for ${metric}`
       )
-      assert.equal(
-        coachCategoryForMetric(metric),
-        HEALTH_METRIC_COACH_CATEGORY[metric]
-      )
+      // Canonical map entries must agree with coachCategoryForMetric.
+      if (Object.prototype.hasOwnProperty.call(HEALTH_METRIC_COACH_CATEGORY, metric)) {
+        assert.equal(
+          category,
+          HEALTH_METRIC_COACH_CATEGORY[
+            metric as keyof typeof HEALTH_METRIC_COACH_CATEGORY
+          ]
+        )
+      }
     }
   })
 

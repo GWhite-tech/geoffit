@@ -19,14 +19,11 @@ export type CoachPermissionCategory = (typeof COACH_PERMISSION_CATEGORIES)[numbe
 
 /**
  * Canonical health_records.metric_type → coach category.
- * Keys are the HealthMetricType vocabulary on main; blood-pressure metric
- * strings are handled in coachCategoryForMetric so Coach does not depend on
- * BP product/domain WIP.
+ * Keys are the core HealthMetricType vocabulary; blood-pressure metric
+ * strings are handled in coachCategoryForMetric / COACH_EXTRA_VITALS_METRICS
+ * so Coach does not require BP product/domain WIP to typecheck.
  */
-export const HEALTH_METRIC_COACH_CATEGORY: Record<
-  HealthMetricType,
-  CoachPermissionCategory
-> = {
+export const HEALTH_METRIC_COACH_CATEGORY = {
   heart_rate: "vitals",
   resting_heart_rate: "vitals",
   heart_rate_variability: "vitals",
@@ -50,7 +47,11 @@ export const HEALTH_METRIC_COACH_CATEGORY: Record<
   dietary_alcohol: "nutrition",
   dietary_caffeine: "nutrition",
   workout: "training",
-}
+} as const satisfies Partial<
+  Record<HealthMetricType, CoachPermissionCategory>
+>
+
+type CanonicalCoachMetric = keyof typeof HEALTH_METRIC_COACH_CATEGORY
 
 /** Metric strings mapped as vitals even when not yet in HealthMetricType. */
 const COACH_EXTRA_VITALS_METRICS = new Set([
@@ -98,8 +99,8 @@ export function coachCategoryForMetric(
   metricType: string
 ): CoachPermissionCategory | null {
   if (COACH_EXTRA_VITALS_METRICS.has(metricType)) return "vitals"
-  if (metricType in HEALTH_METRIC_COACH_CATEGORY) {
-    return HEALTH_METRIC_COACH_CATEGORY[metricType as HealthMetricType]
+  if (Object.prototype.hasOwnProperty.call(HEALTH_METRIC_COACH_CATEGORY, metricType)) {
+    return HEALTH_METRIC_COACH_CATEGORY[metricType as CanonicalCoachMetric]
   }
   return null
 }
@@ -109,7 +110,7 @@ export function metricTypesForCoachCategory(
 ): string[] {
   const fromCanon = (
     Object.entries(HEALTH_METRIC_COACH_CATEGORY) as Array<
-      [HealthMetricType, CoachPermissionCategory]
+      [CanonicalCoachMetric, CoachPermissionCategory]
     >
   )
     .filter(([, cat]) => cat === category)

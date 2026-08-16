@@ -178,10 +178,9 @@ export function AccountDashboard() {
             value={`${sources.connected} sources`}
           />
           <Row
-            href="/settings?category=cloud"
+            href="/coaching"
             icon={Share2}
             label="Invite coach"
-            value="Soon"
           />
         </div>
       </section>

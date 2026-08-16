@@ -11,7 +11,6 @@ import {
 import {
   appleHealthWorkoutRecordFromRow,
   appleHealthWorkoutToInsertRow,
-  appleHealthWorkoutToUpdatePatch,
   hevyWorkoutFromRow,
   hevyWorkoutToInsertRow,
   hevyWorkoutToUpdatePatch,
@@ -98,26 +97,22 @@ export function createWorkoutSupabaseRepository(
         fingerprints
       )
       let inserted = 0
-      let updated = 0
+      let skipped = 0
       const toInsert: Record<string, unknown>[] = []
+      const pendingInsert = new Set<string>()
       for (const record of records) {
         const fp = appleHealthWorkoutCloudFingerprint(record)
-        const found = existing.get(fp)
-        if (!found) {
-          toInsert.push(appleHealthWorkoutToInsertRow(record, ctx))
-        } else {
-          await updateRowById(
-            supabase,
-            TABLE,
-            found.id,
-            ctx.userId,
-            appleHealthWorkoutToUpdatePatch(record, found.revision, ctx)
-          )
-          updated += 1
+        // AH workout fingerprint includes activity/dates/duration/distance/energy.
+        // Existing match ⇒ clinical identity already stored; skip UPDATE.
+        if (existing.has(fp) || pendingInsert.has(fp)) {
+          skipped += 1
+          continue
         }
+        toInsert.push(appleHealthWorkoutToInsertRow(record, ctx))
+        pendingInsert.add(fp)
       }
       inserted += await insertRows(supabase, TABLE, toInsert)
-      return tallyUpsert(inserted, updated)
+      return tallyUpsert(inserted, 0, skipped)
     },
 
     async listUpdatedSince(

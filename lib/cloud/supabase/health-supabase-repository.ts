@@ -6,7 +6,6 @@ import { mapSupabaseError } from "../errors"
 import {
   healthRecordFromRow,
   healthRecordToInsertRow,
-  healthRecordToUpdatePatch,
   type HealthRecordRow,
 } from "../mappers/health-mapper"
 import type {
@@ -21,7 +20,6 @@ import {
   listUpdatedSinceRows,
   softDeleteByFingerprints,
   tallyUpsert,
-  updateRowById,
 } from "./upsert"
 
 const TABLE = "health_records"
@@ -49,7 +47,7 @@ export function createHealthSupabaseRepository(
     ): Promise<UpsertResult> {
       if (records.length === 0) return emptyUpsertResult()
       let inserted = 0
-      let updated = 0
+      let skipped = 0
 
       for (let i = 0; i < records.length; i += BATCH) {
         const slice = records.slice(i, i + BATCH)
@@ -60,24 +58,21 @@ export function createHealthSupabaseRepository(
           slice.map((r) => r.fingerprint)
         )
         const toInsert: Record<string, unknown>[] = []
+        const pendingInsert = new Set<string>()
         for (const record of slice) {
-          const found = existing.get(record.fingerprint)
-          if (!found) {
-            toInsert.push(healthRecordToInsertRow(record, ctx))
-          } else {
-            await updateRowById(
-              supabase,
-              TABLE,
-              found.id,
-              ctx.userId,
-              healthRecordToUpdatePatch(record, found.revision, ctx)
-            )
-            updated += 1
+          const fp = record.fingerprint
+          // Identical fingerprint ⇒ clinical identity already stored.
+          // Skip UPDATE (revision/provenance bump) — true no-op.
+          if (existing.has(fp) || pendingInsert.has(fp)) {
+            skipped += 1
+            continue
           }
+          toInsert.push(healthRecordToInsertRow(record, ctx))
+          pendingInsert.add(fp)
         }
         inserted += await insertRows(supabase, TABLE, toInsert)
       }
-      return tallyUpsert(inserted, updated)
+      return tallyUpsert(inserted, 0, skipped)
     },
 
     async listUpdatedSince(

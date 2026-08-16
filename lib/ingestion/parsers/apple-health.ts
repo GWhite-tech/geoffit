@@ -4,41 +4,20 @@ import { AppleHealthImporter } from "@/lib/server/importers/AppleHealthImporter"
 import {
   appleHealthPersistPrefix,
   buildAppleHealthPersistMeta,
-  createAppleHealthBatchUploadPool,
   writeAppleHealthPersistBatch,
 } from "@/lib/importers/apple-health/batch-persist"
 import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-persist-meta"
+import {
+  readAppleHealthPersistMeta,
+  writeAppleHealthParseCheckpoint,
+} from "@/lib/importers/apple-health/parse-checkpoint"
 import { APPLE_HEALTH_UPLOAD } from "@/lib/importers/storage/types"
 
 import type { DocumentParser } from "../types"
 import { bytesToFile } from "./bytes-to-file"
 
-const UPLOAD_CONCURRENCY = 8
 /** Stop ~30s before Vercel maxDuration=300 to return a JSON checkpoint. */
-const PARSE_TIME_BUDGET_MS = 270_000
-
-function readPriorPersist(
-  priorStats: Record<string, unknown> | null | undefined
-): AppleHealthPersistMeta | null {
-  const raw = priorStats?.apple_health_persist
-  if (!raw || typeof raw !== "object") return null
-  const persist = raw as Partial<AppleHealthPersistMeta>
-  if (
-    typeof persist.bucket !== "string" ||
-    typeof persist.prefix !== "string" ||
-    typeof persist.batchCount !== "number" ||
-    typeof persist.recordsMapped !== "number"
-  ) {
-    return null
-  }
-  return {
-    bucket: persist.bucket,
-    prefix: persist.prefix,
-    batchCount: persist.batchCount,
-    recordsMapped: persist.recordsMapped,
-    complete: persist.complete === true,
-  }
-}
+export const APPLE_HEALTH_PARSE_TIME_BUDGET_MS = 270_000
 
 export const appleHealthExportParser: DocumentParser = {
   id: "parser.apple_health_export",
@@ -57,48 +36,93 @@ export const appleHealthExportParser: DocumentParser = {
 
     const bucket = ctx.file.bucket
     const prefix = appleHealthPersistPrefix(ctx.userId, ctx.ingestRunId)
-    const priorPersist = readPriorPersist(ctx.priorStats)
+    const priorPersist = readAppleHealthPersistMeta(ctx.priorStats)
     const skipMappedRecords =
       priorPersist && !priorPersist.complete ? priorPersist.recordsMapped : 0
     let batchIndex =
       priorPersist && !priorPersist.complete ? priorPersist.batchCount : 0
     let sessionRecordsMapped = 0
-
-    const pool = createAppleHealthBatchUploadPool(UPLOAD_CONCURRENCY)
-    const uploadState: { error: Error | null } = { error: null }
+    /** Latest durable stats after each successful batch checkpoint. */
+    let durableStats: Record<string, unknown> = {
+      ...(ctx.priorStats && typeof ctx.priorStats === "object"
+        ? ctx.priorStats
+        : {}),
+    }
 
     const importer = new AppleHealthImporter()
     const api = await importer.parseUpload(file, {
-      deadlineAt: Date.now() + PARSE_TIME_BUDGET_MS,
+      deadlineAt: Date.now() + APPLE_HEALTH_PARSE_TIME_BUDGET_MS,
       skipMappedRecords,
       onBatch: async (batch) => {
-        if (uploadState.error) throw uploadState.error
         const body = JSON.stringify(batch)
         const index = batchIndex
-        batchIndex += 1
-        sessionRecordsMapped += batch.length
-        await pool.enqueue(async () => {
-          try {
-            await writeAppleHealthPersistBatch({
-              supabase: ctx.supabase,
-              bucket,
-              prefix,
-              batchIndex: index,
-              body,
-            })
-          } catch (error) {
-            uploadState.error =
-              error instanceof Error
-                ? error
-                : new Error("Failed to persist Apple Health batch.")
-            throw uploadState.error
-          }
+        const recordsInBatch = batch.length
+        // Crash-safe order: upload Storage object, then advance checkpoint,
+        // then advance in-memory indices (never mark progress without durable write).
+        await writeAppleHealthPersistBatch({
+          supabase: ctx.supabase,
+          bucket,
+          prefix,
+          batchIndex: index,
+          body,
         })
+        const nextBatchCount = index + 1
+        const nextRecordsMapped =
+          skipMappedRecords + sessionRecordsMapped + recordsInBatch
+        const persist = buildAppleHealthPersistMeta({
+          bucket,
+          prefix,
+          batchCount: nextBatchCount,
+          recordsMapped: nextRecordsMapped,
+          complete: false,
+        })
+        durableStats = await writeAppleHealthParseCheckpoint({
+          supabase: ctx.supabase,
+          ingestRunId: ctx.ingestRunId,
+          userId: ctx.userId,
+          priorStats: durableStats,
+          persist,
+          status: "partial",
+        })
+        batchIndex = nextBatchCount
+        sessionRecordsMapped += recordsInBatch
       },
     })
 
-    await pool.drain()
-    if (uploadState.error) {
+    const payloadMeta =
+      api.payload && typeof api.payload === "object"
+        ? ((api.payload as { metadata?: Record<string, unknown> }).metadata ??
+          {})
+        : {}
+    const incomplete = payloadMeta.incomplete === true
+
+    // Durable progress is Storage-backed uploads only — not SAX reparse progress
+    // during skipMappedRecords (which can be < prior recordsMapped mid-resume).
+    const durableRecordsMapped = skipMappedRecords + sessionRecordsMapped
+    const pipelineMapped =
+      typeof payloadMeta.recordsMapped === "number"
+        ? payloadMeta.recordsMapped
+        : durableRecordsMapped
+
+    const persist = buildAppleHealthPersistMeta({
+      bucket,
+      prefix,
+      batchCount: batchIndex,
+      recordsMapped: durableRecordsMapped,
+      complete: !incomplete,
+    })
+
+    // Final checkpoint for this invocation (complete or soft-budget stop).
+    try {
+      durableStats = await writeAppleHealthParseCheckpoint({
+        supabase: ctx.supabase,
+        ingestRunId: ctx.ingestRunId,
+        userId: ctx.userId,
+        priorStats: durableStats,
+        persist,
+        status: incomplete ? "partial" : "running",
+      })
+    } catch (error) {
       return {
         success: false,
         preview: null,
@@ -108,33 +132,16 @@ export const appleHealthExportParser: DocumentParser = {
           ...(typeof api.diagnostics === "object" && api.diagnostics
             ? (api.diagnostics as Record<string, unknown>)
             : {}),
-          failed_stage: "persist_batch",
+          failed_stage: "persist_checkpoint",
+          persist,
         },
-        error: uploadState.error.message,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to persist Apple Health parse checkpoint.",
         contentFingerprint: ctx.file.checksum,
       }
     }
-
-    const payloadMeta =
-      api.payload && typeof api.payload === "object"
-        ? ((api.payload as { metadata?: Record<string, unknown> }).metadata ??
-          {})
-        : {}
-    const incomplete = payloadMeta.incomplete === true
-
-    const recordsMapped = skipMappedRecords + sessionRecordsMapped
-    const pipelineMapped =
-      typeof payloadMeta.recordsMapped === "number"
-        ? payloadMeta.recordsMapped
-        : recordsMapped
-
-    const persist = buildAppleHealthPersistMeta({
-      bucket,
-      prefix,
-      batchCount: batchIndex,
-      recordsMapped: pipelineMapped,
-      complete: !incomplete,
-    })
 
     if (api.payload && typeof api.payload === "object") {
       const payload = api.payload as {
@@ -154,7 +161,8 @@ export const appleHealthExportParser: DocumentParser = {
         ? {
             ...(api.diagnostics as Record<string, unknown>),
             persist,
-            recordsMapped: pipelineMapped,
+            recordsMapped: durableRecordsMapped,
+            pipelineRecordsMapped: pipelineMapped,
             batchesFlushed: batchIndex,
             sessionRecordsMapped,
             skipMappedRecords,
@@ -163,7 +171,8 @@ export const appleHealthExportParser: DocumentParser = {
           }
         : {
             persist,
-            recordsMapped: pipelineMapped,
+            recordsMapped: durableRecordsMapped,
+            pipelineRecordsMapped: pipelineMapped,
             batchesFlushed: batchIndex,
             sessionRecordsMapped,
             skipMappedRecords,
@@ -183,4 +192,11 @@ export const appleHealthExportParser: DocumentParser = {
       contentFingerprint: ctx.file.checksum,
     }
   },
+}
+
+/** @deprecated Prefer readAppleHealthPersistMeta — kept for local call sites. */
+export function readPriorPersist(
+  priorStats: Record<string, unknown> | null | undefined
+): AppleHealthPersistMeta | null {
+  return readAppleHealthPersistMeta(priorStats)
 }

@@ -5,8 +5,14 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { HealthRecord } from "@/lib/domain/health"
 
 import type { AppleHealthPersistMeta } from "./batch-persist-meta"
+import {
+  appleHealthPersistPrefix,
+  buildAppleHealthPersistMeta,
+} from "./batch-persist-meta"
 
 export type { AppleHealthPersistMeta } from "./batch-persist-meta"
+export { appleHealthPersistPrefix, buildAppleHealthPersistMeta }
+
 
 /**
  * Write one mapped batch as JSON under the ingest run prefix.
@@ -33,29 +39,6 @@ export async function writeAppleHealthPersistBatch(input: {
     })
   if (error) {
     throw new Error(`Failed to persist Apple Health batch: ${error.message}`)
-  }
-}
-
-export function appleHealthPersistPrefix(
-  userId: string,
-  ingestRunId: string
-): string {
-  return `${userId}/ingest-batches/${ingestRunId}`
-}
-
-export function buildAppleHealthPersistMeta(input: {
-  bucket: string
-  prefix: string
-  batchCount: number
-  recordsMapped: number
-  complete: boolean
-}): AppleHealthPersistMeta {
-  return {
-    bucket: input.bucket,
-    prefix: input.prefix,
-    batchCount: input.batchCount,
-    recordsMapped: input.recordsMapped,
-    complete: input.complete,
   }
 }
 

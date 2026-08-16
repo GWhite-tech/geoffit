@@ -24,6 +24,7 @@ import { readCloudFactPersist } from "../writers/cloud-fact-persist"
 import { createRepositoryFactWriter } from "../writers/repository-fact-writer"
 import { noopTimelineWriter } from "../writers/timeline"
 import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-persist-meta"
+import { maybeRecoverAppleHealthParseCheckpoint } from "@/lib/importers/apple-health/parse-checkpoint"
 import {
   downloadStoredFile,
   loadOwnedFile,
@@ -225,11 +226,48 @@ async function processIngestRunBody(
     typeof primary
   >[]
 
-  const prior = await readIngestAttempt(
+  let prior = await readIngestAttempt(
     options.supabase,
     options.ingestRunId,
     options.userId
   )
+
+  // Orphan recovery: running/partial with Storage batches but missing checkpoint.
+  if (
+    options.documentKind === "apple_health_export" &&
+    (prior.status === "running" || prior.status === "partial")
+  ) {
+    const recovered = await maybeRecoverAppleHealthParseCheckpoint({
+      supabase: options.supabase,
+      userId: options.userId,
+      ingestRunId: options.ingestRunId,
+      bucket: primary.bucket,
+      status: prior.status,
+      stats: prior.stats,
+    })
+    if (recovered.recovered) {
+      console.info(
+        "APPLE_HEALTH_ORPHAN_CHECKPOINT_RECOVERED",
+        JSON.stringify({
+          ingestRunId: options.ingestRunId,
+          apple_health_persist: recovered.stats.apple_health_persist ?? null,
+        })
+      )
+      prior = {
+        ...prior,
+        status: "partial",
+        stats: recovered.stats,
+      }
+    } else if (recovered.reason) {
+      console.info(
+        "APPLE_HEALTH_ORPHAN_CHECKPOINT_SKIPPED",
+        JSON.stringify({
+          ingestRunId: options.ingestRunId,
+          reason: recovered.reason,
+        })
+      )
+    }
+  }
 
   if (prior.status === "succeeded" && !options.retry) {
     return {
@@ -537,12 +575,35 @@ async function processIngestRunBody(
       ? (diagnosticsForUpdate as Record<string, unknown>)
       : null
 
-  const persistMeta =
+  const persistMetaFromDiagnostics =
     diagnosticsRecord &&
     diagnosticsRecord.persist &&
     typeof diagnosticsRecord.persist === "object"
       ? (diagnosticsRecord.persist as Record<string, unknown>)
       : null
+
+  // Mid-parse checkpoints write apple_health_persist directly; re-read so a
+  // failed/empty diagnostics path cannot wipe durable Storage progress.
+  let persistMeta: Record<string, unknown> | null =
+    persistMetaFromDiagnostics
+  if (options.documentKind === "apple_health_export") {
+    const latest = await readIngestAttempt(
+      options.supabase,
+      options.ingestRunId,
+      options.userId
+    )
+    const fromDb = readAppleHealthPersistFromStats(latest.stats)
+    const fromDiag = readAppleHealthPersistFromStats({
+      apple_health_persist: persistMetaFromDiagnostics,
+    })
+    const chosen =
+      fromDiag && fromDb
+        ? fromDiag.batchCount >= fromDb.batchCount
+          ? fromDiag
+          : fromDb
+        : (fromDiag ?? fromDb)
+    persistMeta = chosen
+  }
 
   await updateIngestRun(options.supabase, {
     ingestRunId: options.ingestRunId,

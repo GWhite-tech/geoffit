@@ -19,6 +19,32 @@ import { mapSupabaseError } from "../errors"
 import { chunkArray } from "../mappers/shared"
 import type { SyncCursor, UpsertResult } from "../types"
 
+/**
+ * Max fingerprints per PostgREST `.in("fingerprint", …)` GET/filter.
+ *
+ * Long Unicode Apple Health fingerprints (e.g. “Geoff’s Apple Watch” with
+ * U+2019 / U+A0) inflate percent-encoded URL size. Local + production
+ * gateways reject oversized GETs (“URI too long” / HTTP 400). Measured
+ * boundary for long Unicode fps: ~182 OK, ~183 fail when sent in one `.in()`.
+ * 50 keeps encoded query strings well under that threshold for realistic
+ * Apple Health fingerprint lengths while preserving correct existence checks.
+ */
+export const FINGERPRINT_IN_QUERY_CHUNK_SIZE = 50
+
+/**
+ * Approximate percent-encoded size of a PostgREST `fingerprint=in.(…)` filter.
+ * Used by tests to assert chunks stay below gateway URL limits.
+ */
+export function estimateFingerprintInFilterEncodedBytes(
+  fingerprints: string[]
+): number {
+  // Mirrors PostgREST `.in()` list encoding closely enough for regression tests.
+  const inner = fingerprints
+    .map((fp) => `"${String(fp).replace(/"/g, '\\"')}"`)
+    .join(",")
+  return encodeURIComponent(`fingerprint=in.(${inner})`).length
+}
+
 export type ExistingFactRef = {
   id: string
   fingerprint: string
@@ -34,7 +60,7 @@ export async function fetchExistingByFingerprints(
   const map = new Map<string, ExistingFactRef>()
   if (fingerprints.length === 0) return map
 
-  for (const chunk of chunkArray(fingerprints, 200)) {
+  for (const chunk of chunkArray(fingerprints, FINGERPRINT_IN_QUERY_CHUNK_SIZE)) {
     const { data, error } = await supabase
       .from(table)
       .select("id, fingerprint, revision")
@@ -95,7 +121,10 @@ export async function softDeleteByFingerprints(
   if (fingerprints.length === 0) return 0
   let total = 0
   const now = new Date().toISOString()
-  for (const chunk of chunkArray(fingerprints, 200)) {
+  for (const chunk of chunkArray(
+    fingerprints,
+    FINGERPRINT_IN_QUERY_CHUNK_SIZE
+  )) {
     const { data, error } = await supabase
       .from(table)
       .update({ deleted_at: now })

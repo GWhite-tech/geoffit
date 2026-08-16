@@ -387,6 +387,9 @@ describe("persistAppleHealthBatchesToCloud", () => {
     // No additional inserts — fingerprint upsert is idempotent.
     assert.equal(insertedFingerprints.length, 3)
     assert.equal(knownByFingerprint.size, 3)
+    // No-op path reports skipped (not hardcoded 0).
+    assert.equal(second.written, 0)
+    assert.equal(second.skipped, 3)
   })
 
   it("failure after batch N does not rewrite batches 0..N-1 on resume", async () => {

@@ -117,6 +117,7 @@ export async function persistAppleHealthBatchesToCloud(input: {
 
   const repos = createCloudRepositories(input.supabase)
   let written = 0
+  let skipped = 0
   let batchesProcessedThisInvoke = 0
   const errors: string[] = []
 
@@ -132,6 +133,7 @@ export async function persistAppleHealthBatchesToCloud(input: {
       if (batch.length > 0) {
         const healthResult = await repos.health.upsertMany(batch, input.ctx)
         written += healthResult.written
+        skipped += healthResult.skipped
         state.recordsWritten += healthResult.written
 
         const workouts = batch.filter(
@@ -143,6 +145,7 @@ export async function persistAppleHealthBatchesToCloud(input: {
             input.ctx
           )
           written += workoutResult.written
+          skipped += workoutResult.skipped
           state.workoutsWritten += workoutResult.written
         }
 
@@ -153,6 +156,7 @@ export async function persistAppleHealthBatchesToCloud(input: {
             input.ctx
           )
           written += nutritionResult.written
+          skipped += nutritionResult.skipped
           state.nutritionDaysWritten += nutritionResult.written
         }
       }
@@ -175,7 +179,7 @@ export async function persistAppleHealthBatchesToCloud(input: {
 
   return {
     written,
-    skipped: 0,
+    skipped,
     errors,
     incomplete,
     state,

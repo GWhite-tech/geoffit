@@ -547,11 +547,14 @@ describe("maybeRecoverAppleHealthParseCheckpoint", () => {
             }
           }
           const statsFilter = filters.find((f) => f.col === "stats")
-          if (
-            statsFilter &&
-            JSON.stringify(statsFilter.val) !== JSON.stringify(current)
-          ) {
-            return { data: null, error: null }
+          if (statsFilter) {
+            const encoded =
+              typeof statsFilter.val === "string"
+                ? statsFilter.val
+                : JSON.stringify(statsFilter.val)
+            if (encoded !== JSON.stringify(current)) {
+              return { data: null, error: null }
+            }
           }
           updates.push(patch!)
           if (patch!.stats) {

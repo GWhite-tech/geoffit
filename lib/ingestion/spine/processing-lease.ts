@@ -19,6 +19,20 @@ export const DEFAULT_PROCESSING_LEASE_MS = 270_000
 /** PostgREST/jsonb path for atomic ownership filters. */
 export const LEASE_OWNER_FILTER = "stats->processing_lease->>owner"
 
+/**
+ * Serialize stats for a PostgREST `eq` JSONB CAS filter.
+ *
+ * postgrest-js builds `eq.${value}` via string coercion — a raw object becomes
+ * the literal `[object Object]`, which Postgres rejects (22P02). Passing
+ * JSON.stringify keeps a single atomic `WHERE stats = <jsonb>` predicate
+ * (semantic jsonb equality); it does not switch to containment (@>).
+ */
+export function serializeStatsForCas(
+  stats: Record<string, unknown>
+): string {
+  return JSON.stringify(stats)
+}
+
 export class LeaseOwnershipLostError extends Error {
   readonly code = "lease_ownership_lost" as const
   constructor(message = "Ingest processing lease ownership was lost.") {
@@ -165,7 +179,7 @@ export async function claimProcessingLease(input: {
       .update({ stats: nextStats })
       .eq("id", input.ingestRunId)
       .eq("user_id", input.userId)
-      .eq("stats", prior)
+      .eq("stats", serializeStatsForCas(prior))
       .select("id, stats")
       .maybeSingle()
 
@@ -310,7 +324,7 @@ export async function refreshProcessingLeaseOnly(input: {
       .eq("id", input.ingestRunId)
       .eq("user_id", input.userId)
       .eq(LEASE_OWNER_FILTER, input.owner)
-      .eq("stats", prior)
+      .eq("stats", serializeStatsForCas(prior))
       .select("id, stats")
       .maybeSingle()
 
@@ -380,7 +394,7 @@ export async function releaseProcessingLease(input: {
       .eq("id", input.ingestRunId)
       .eq("user_id", input.userId)
       .eq(LEASE_OWNER_FILTER, input.owner)
-      .eq("stats", prior)
+      .eq("stats", serializeStatsForCas(prior))
       .select("id")
       .maybeSingle()
 

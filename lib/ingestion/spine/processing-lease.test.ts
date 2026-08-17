@@ -9,20 +9,30 @@ import {
   readProcessingLease,
   refreshProcessingLeaseOnly,
   releaseProcessingLease,
+  serializeStatsForCas,
   updateIngestRunIfLeaseOwner,
 } from "./processing-lease"
 
 type Row = { stats: Record<string, unknown>; status?: string }
 
+function normalizeStatsCasFilter(val: unknown): string {
+  if (typeof val === "string") return val
+  if (val && typeof val === "object") return JSON.stringify(val)
+  return String(val)
+}
+
 /**
  * Minimal PostgREST-shaped mock that honors:
- * - full stats CAS (.eq("stats", prior))
+ * - full stats CAS (.eq("stats", serializeStatsForCas(prior)))
  * - ownership filter (.eq(LEASE_OWNER_FILTER, owner))
+ *
+ * Captures the raw stats CAS filter values for serialization assertions.
  */
 function makeSupabase(initial: Row) {
   let current: Record<string, unknown> = { ...initial.stats }
   let status = initial.status ?? "running"
   let updates = 0
+  const statsCasValues: unknown[] = []
 
   const client = {
     get stats() {
@@ -33,6 +43,9 @@ function makeSupabase(initial: Row) {
     },
     get updateCount() {
       return updates
+    },
+    get statsCasValues() {
+      return statsCasValues
     },
     setStats(next: Record<string, unknown>) {
       current = { ...next }
@@ -82,11 +95,27 @@ function makeSupabase(initial: Row) {
         }
 
         const statsFilter = filters.find((f) => f.col === "stats")
-        if (
-          statsFilter &&
-          JSON.stringify(statsFilter.val) !== JSON.stringify(current)
-        ) {
-          return { data: null, error: null }
+        if (statsFilter) {
+          statsCasValues.push(statsFilter.val)
+          // Mimic PostgREST: object values become "[object Object]" (22P02).
+          if (
+            statsFilter.val !== null &&
+            typeof statsFilter.val === "object"
+          ) {
+            return {
+              data: null,
+              error: {
+                message: 'invalid input syntax for type json',
+                code: "22P02",
+                details: 'Token "object" is invalid.',
+              },
+            }
+          }
+          if (
+            normalizeStatsCasFilter(statsFilter.val) !== JSON.stringify(current)
+          ) {
+            return { data: null, error: null }
+          }
         }
 
         updates += 1
@@ -215,6 +244,119 @@ describe("processing_lease", () => {
       owner: "owner-other",
     })
     assert.deepEqual(sb2.stats.processing_lease, existing)
+  })
+})
+
+describe("stats JSONB CAS serialization (22P02 regression)", () => {
+  it("serializeStatsForCas emits JSON, never [object Object]", () => {
+    const prior = {
+      document_kind: "apple_health_export",
+      nested: { a: 1, b: [true, null] },
+    }
+    const encoded = serializeStatsForCas(prior)
+    assert.equal(typeof encoded, "string")
+    assert.equal(encoded.includes("[object Object]"), false)
+    assert.deepEqual(JSON.parse(encoded), prior)
+    // Matches postgrest-js: eq.${JSON.stringify(prior)}
+    assert.equal(`eq.${encoded}`, `eq.${JSON.stringify(prior)}`)
+  })
+
+  it("claim CAS passes JSON-string filter (not raw object)", async () => {
+    const sb = makeSupabase({
+      stats: { document_kind: "apple_health_export", keep: 1 },
+    })
+    const result = await claimProcessingLease({
+      supabase: sb as never,
+      ingestRunId: "run-1",
+      userId: "user-1",
+      owner: "owner-a",
+      nowMs: 1_000,
+      leaseMs: 60_000,
+    })
+    assert.equal(result.ok, true)
+    assert.ok(sb.statsCasValues.length >= 1)
+    for (const val of sb.statsCasValues) {
+      assert.equal(typeof val, "string")
+      assert.equal(String(val).includes("[object Object]"), false)
+      assert.doesNotThrow(() => JSON.parse(String(val)))
+    }
+    assert.equal(readProcessingLease(sb.stats)?.owner, "owner-a")
+  })
+
+  it("heartbeat CAS passes JSON-string filter and refreshes owner lease", async () => {
+    const sb = makeSupabase({
+      stats: {
+        processing_lease: buildProcessingLease("owner-a", 60_000, 1_000),
+        cursor: 3,
+      },
+    })
+    const before = readProcessingLease(sb.stats)!.expires_at
+    const hb = await refreshProcessingLeaseOnly({
+      supabase: sb as never,
+      ingestRunId: "run-1",
+      userId: "user-1",
+      owner: "owner-a",
+      nowMs: 2_000,
+      leaseMs: 60_000,
+    })
+    assert.equal(hb.ok, true)
+    assert.ok(sb.statsCasValues.length >= 1)
+    for (const val of sb.statsCasValues) {
+      assert.equal(typeof val, "string")
+      assert.equal(String(val).includes("[object Object]"), false)
+      assert.doesNotThrow(() => JSON.parse(String(val)))
+    }
+    assert.equal(sb.stats.cursor, 3)
+    assert.ok(
+      Date.parse(readProcessingLease(sb.stats)!.expires_at) > Date.parse(before)
+    )
+  })
+
+  it("release CAS passes JSON-string filter and clears only own lease", async () => {
+    const sb = makeSupabase({
+      stats: {
+        processing_lease: buildProcessingLease("owner-a", 60_000, 1_000),
+        keep: true,
+      },
+    })
+    await releaseProcessingLease({
+      supabase: sb as never,
+      ingestRunId: "run-1",
+      userId: "user-1",
+      owner: "owner-a",
+    })
+    assert.ok(sb.statsCasValues.length >= 1)
+    for (const val of sb.statsCasValues) {
+      assert.equal(typeof val, "string")
+      assert.equal(String(val).includes("[object Object]"), false)
+      assert.doesNotThrow(() => JSON.parse(String(val)))
+    }
+    assert.equal(sb.stats.processing_lease, undefined)
+    assert.equal(sb.stats.keep, true)
+  })
+
+  it("raw object stats CAS would fail with 22P02 (documents production bug)", async () => {
+    const sb = makeSupabase({
+      stats: { document_kind: "apple_health_export" },
+    })
+    // Directly exercise the mock's PostgREST object-coercion path.
+    const chain = sb.from("ingest_runs") as ReturnType<typeof sb.from> & {
+      update: (p: unknown) => typeof chain
+      eq: (c: string, v: unknown) => typeof chain
+      maybeSingle: () => Promise<{
+        data: unknown
+        error: { code?: string } | null
+      }>
+    }
+    const { error } = await chain
+      .update({ stats: { claimed: true } })
+      .eq("id", "run-1")
+      .eq("user_id", "user-1")
+      .eq("stats", { document_kind: "apple_health_export" })
+      .maybeSingle()
+    assert.ok(error)
+    assert.equal(error!.code, "22P02")
+    assert.equal(sb.updateCount, 0)
   })
 })
 

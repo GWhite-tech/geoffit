@@ -3,33 +3,27 @@
  *
  * Ordering: Storage batch upload succeeds → then checkpoint advances.
  * Checkpoints never move backwards (batchCount / recordsMapped).
+ *
+ * While a processing lease is held, checkpoint writes are ownership-filtered so a
+ * stale invocation cannot overwrite a newer owner's lease or progress.
+ *
+ * Orphan Storage recovery MUST run only after this invocation owns the lease and
+ * MUST write via updateIngestRunIfLeaseOwner (never an unowned full-stats patch).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+
+import {
+  LeaseOwnershipLostError,
+  isProcessingLeaseActive,
+  readProcessingLease,
+  updateIngestRunIfLeaseOwner,
+} from "@/lib/ingestion/spine/processing-lease"
 
 import type { AppleHealthPersistMeta } from "./batch-persist-meta"
 import { appleHealthPersistPrefix } from "./batch-persist-meta"
 
 const BATCH_NAME_RE = /^(\d{5})\.json$/
-
-async function patchIngestRunStats(input: {
-  supabase: SupabaseClient
-  ingestRunId: string
-  userId: string
-  status: string
-  stats: Record<string, unknown>
-}): Promise<void> {
-  const { error } = await input.supabase
-    .from("ingest_runs")
-    .update({
-      status: input.status,
-      stats: input.stats,
-    })
-    .eq("id", input.ingestRunId)
-    .eq("user_id", input.userId)
-
-  if (error) throw new Error(error.message)
-}
 
 export function isAppleHealthPersistMeta(
   value: unknown
@@ -56,6 +50,21 @@ export function readAppleHealthPersistMeta(
 ): AppleHealthPersistMeta | null {
   const raw = stats?.apple_health_persist
   return isAppleHealthPersistMeta(raw) ? raw : null
+}
+
+/**
+ * Cheap DB-only orphan candidate check (no Storage I/O, no mutation).
+ * True when running/partial and checkpoint is missing or empty.
+ */
+export function isAppleHealthOrphanCheckpointCandidate(
+  status: string,
+  stats: Record<string, unknown> | null | undefined
+): boolean {
+  if (status !== "running" && status !== "partial") return false
+  const existing = readAppleHealthPersistMeta(stats)
+  if (existing?.complete) return false
+  if (existing && existing.batchCount > 0) return false
+  return true
 }
 
 /**
@@ -115,6 +124,8 @@ export async function writeAppleHealthParseCheckpoint(input: {
   userId: string
   priorStats: Record<string, unknown> | null | undefined
   persist: AppleHealthPersistMeta
+  /** Required during leased process-run; refreshes lease on each write. */
+  leaseOwner: string
   /** Status while parse is still incomplete. */
   status?: "running" | "partial"
 }): Promise<Record<string, unknown>> {
@@ -124,14 +135,25 @@ export async function writeAppleHealthParseCheckpoint(input: {
   )
   const status =
     input.status ?? (input.persist.complete ? "running" : "partial")
-  await patchIngestRunStats({
+  const result = await updateIngestRunIfLeaseOwner({
     supabase: input.supabase,
     ingestRunId: input.ingestRunId,
     userId: input.userId,
+    owner: input.leaseOwner,
     status: input.persist.complete ? status : "partial",
     stats,
+    refreshLease: true,
   })
-  return stats
+  if (!result.ok) {
+    throw new LeaseOwnershipLostError(
+      "Apple Health parse checkpoint aborted — processing lease ownership was lost."
+    )
+  }
+  const written =
+    result.data?.stats && typeof result.data.stats === "object"
+      ? (result.data.stats as Record<string, unknown>)
+      : stats
+  return written
 }
 
 export type OrphanStorageReconstruction =
@@ -242,9 +264,26 @@ export async function reconstructAppleHealthPersistFromStorage(input: {
   }
 }
 
+export type OrphanRecoveryResult =
+  | {
+      recovered: true
+      stats: Record<string, unknown>
+    }
+  | {
+      recovered: false
+      stats: Record<string, unknown>
+      reason?: string
+      /** Another invocation owns the lease — caller must not mutate. */
+      heldBy?: string | null
+      lostOwnership?: boolean
+    }
+
 /**
- * If the run is orphaned (running/partial, Storage has batches, checkpoint missing
- * or incomplete without matching progress), reconstruct a safe checkpoint.
+ * Reconstruct a durable parse checkpoint from Storage.
+ *
+ * MUST be called only after this invocation owns `leaseOwner`.
+ * Uses claimed/canonical `stats` (re-read after claim — never a pre-claim snapshot).
+ * Writes exclusively via updateIngestRunIfLeaseOwner.
  */
 export async function maybeRecoverAppleHealthParseCheckpoint(input: {
   supabase: SupabaseClient
@@ -252,24 +291,35 @@ export async function maybeRecoverAppleHealthParseCheckpoint(input: {
   ingestRunId: string
   bucket: string
   status: string
+  /** Canonical stats after lease claim (includes this owner's lease). */
   stats: Record<string, unknown>
-}): Promise<{
-  stats: Record<string, unknown>
-  recovered: boolean
-  reason?: string
-}> {
-  const existing = readAppleHealthPersistMeta(input.stats)
-  if (existing?.complete) {
-    return { stats: input.stats, recovered: false }
+  leaseOwner: string
+}): Promise<OrphanRecoveryResult> {
+  const leaseOwner = input.leaseOwner.trim()
+  if (!leaseOwner) {
+    throw new Error("Orphan recovery requires a processing lease owner.")
   }
 
-  // Already have a forward checkpoint — use it.
-  if (existing && existing.batchCount > 0) {
-    return { stats: input.stats, recovered: false }
+  const held = readProcessingLease(input.stats)
+  if (held && held.owner !== leaseOwner && isProcessingLeaseActive(held)) {
+    return {
+      recovered: false,
+      stats: input.stats,
+      heldBy: held.owner,
+      reason: "processing_lease_held",
+    }
+  }
+  if (!held || held.owner !== leaseOwner) {
+    return {
+      recovered: false,
+      stats: input.stats,
+      lostOwnership: true,
+      reason: "processing_lease_not_owned",
+    }
   }
 
-  if (input.status !== "running" && input.status !== "partial") {
-    return { stats: input.stats, recovered: false }
+  if (!isAppleHealthOrphanCheckpointCandidate(input.status, input.stats)) {
+    return { recovered: false, stats: input.stats }
   }
 
   const reconstructed = await reconstructAppleHealthPersistFromStorage({
@@ -281,8 +331,8 @@ export async function maybeRecoverAppleHealthParseCheckpoint(input: {
 
   if (!reconstructed.ok) {
     return {
-      stats: input.stats,
       recovered: false,
+      stats: input.stats,
       reason: reconstructed.reason,
     }
   }
@@ -291,13 +341,28 @@ export async function maybeRecoverAppleHealthParseCheckpoint(input: {
     input.stats,
     reconstructed.persist
   )
-  await patchIngestRunStats({
+  const result = await updateIngestRunIfLeaseOwner({
     supabase: input.supabase,
     ingestRunId: input.ingestRunId,
     userId: input.userId,
+    owner: leaseOwner,
     status: "partial",
     stats,
+    refreshLease: true,
   })
 
-  return { stats, recovered: true }
+  if (!result.ok) {
+    return {
+      recovered: false,
+      stats: input.stats,
+      lostOwnership: true,
+      reason: "lost_ownership",
+    }
+  }
+
+  const written =
+    result.data?.stats && typeof result.data.stats === "object"
+      ? (result.data.stats as Record<string, unknown>)
+      : stats
+  return { recovered: true, stats: written }
 }

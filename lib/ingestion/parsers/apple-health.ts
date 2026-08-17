@@ -11,6 +11,7 @@ import {
   readAppleHealthPersistMeta,
   writeAppleHealthParseCheckpoint,
 } from "@/lib/importers/apple-health/parse-checkpoint"
+import { isLeaseOwnershipLostError } from "@/lib/ingestion/spine/processing-lease"
 import { APPLE_HEALTH_UPLOAD } from "@/lib/importers/storage/types"
 
 import type { DocumentParser } from "../types"
@@ -27,6 +28,12 @@ export const appleHealthExportParser: DocumentParser = {
   execution: "background",
   maxAttempts: 100,
   async parse(ctx) {
+    if (!ctx.leaseOwner?.trim()) {
+      throw new Error(
+        "Apple Health parse requires a processing lease owner."
+      )
+    }
+    const leaseOwner = ctx.leaseOwner.trim()
     const fileName = ctx.file.originalFilename?.trim() || "export.zip"
     const file = bytesToFile(
       ctx.bytes,
@@ -83,6 +90,7 @@ export const appleHealthExportParser: DocumentParser = {
           priorStats: durableStats,
           persist,
           status: "partial",
+          leaseOwner,
         })
         batchIndex = nextBatchCount
         sessionRecordsMapped += recordsInBatch
@@ -121,8 +129,10 @@ export const appleHealthExportParser: DocumentParser = {
         priorStats: durableStats,
         persist,
         status: incomplete ? "partial" : "running",
+        leaseOwner,
       })
     } catch (error) {
+      if (isLeaseOwnershipLostError(error)) throw error
       return {
         success: false,
         preview: null,

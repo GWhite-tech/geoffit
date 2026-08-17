@@ -20,17 +20,35 @@ import type {
   ProcessIngestResult,
   TimelineWriter,
 } from "../types"
+import {
+  appleHealthCloudFactsPending,
+  shouldResumeAppleHealthCloudOnly,
+} from "../writers/apple-health-cloud-gate"
 import { readCloudFactPersist } from "../writers/cloud-fact-persist"
 import { createRepositoryFactWriter } from "../writers/repository-fact-writer"
 import { noopTimelineWriter } from "../writers/timeline"
 import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-persist-meta"
-import { maybeRecoverAppleHealthParseCheckpoint } from "@/lib/importers/apple-health/parse-checkpoint"
+import {
+  isAppleHealthOrphanCheckpointCandidate,
+  maybeRecoverAppleHealthParseCheckpoint,
+} from "@/lib/importers/apple-health/parse-checkpoint"
 import {
   downloadStoredFile,
   loadOwnedFile,
   readIngestAttempt,
   updateIngestRun,
 } from "./files"
+import {
+  claimProcessingLease,
+  isLeaseOwnershipLostError,
+  isProcessingLeaseActive,
+  LeaseOwnershipLostError,
+  newProcessingLeaseOwner,
+  readProcessingLease,
+  refreshProcessingLeaseOnly,
+  releaseProcessingLease,
+  updateIngestRunIfLeaseOwner,
+} from "./processing-lease"
 
 function emptyParseFailure(error: string): ParseResult {
   return {
@@ -98,21 +116,7 @@ function readAppleHealthPersistFromStats(
   }
 }
 
-/**
- * Parse already finished; only cloud_fact_persist remains.
- * Avoids re-scanning the entire export.zip just to resume cloud upserts.
- */
-function shouldResumeAppleHealthCloudOnly(
-  documentKind: DocumentKind,
-  stats: Record<string, unknown> | null | undefined
-): boolean {
-  if (documentKind !== "apple_health_export") return false
-  const persist = readAppleHealthPersistFromStats(stats)
-  if (!persist?.complete) return false
-  const cloud = readCloudFactPersist(stats)
-  if (!cloud) return true // parse done, cloud never started
-  return !cloud.complete
-}
+export { shouldResumeAppleHealthCloudOnly } from "../writers/apple-health-cloud-gate"
 
 function synthesizeAppleHealthCloudResumeParse(
   stats: Record<string, unknown> | null | undefined
@@ -197,6 +201,40 @@ async function processIngestRunBody(
     options.fileId
   )
   if (!primary) {
+    const priorAttempt = await readIngestAttempt(
+      options.supabase,
+      options.ingestRunId,
+      options.userId
+    ).catch(() => null)
+    const foreign = priorAttempt
+      ? readProcessingLease(priorAttempt.stats)
+      : null
+    if (isProcessingLeaseActive(foreign)) {
+      return {
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        status: "skipped_concurrent",
+        attempt: priorAttempt?.attempt ?? 0,
+        parse: {
+          success: false,
+          preview: null,
+          payload: null,
+          warnings: [],
+          diagnostics: {
+            skippedConcurrent: true,
+            leaseHeldBy: foreign!.owner,
+            ingestRunId: options.ingestRunId,
+          },
+          error:
+            "This import is already processing in another session. Leave that session open, or try again shortly.",
+          contentFingerprint: null,
+        },
+        facts: null,
+        timeline: null,
+        skippedConcurrent: true,
+        leaseHeldBy: foreign!.owner,
+      }
+    }
     const parse = emptyParseFailure("Upload not found.")
     await updateIngestRun(options.supabase, {
       ingestRunId: options.ingestRunId,
@@ -232,63 +270,35 @@ async function processIngestRunBody(
     options.userId
   )
 
-  // Orphan recovery: running/partial with Storage batches but missing checkpoint.
-  if (
-    options.documentKind === "apple_health_export" &&
-    (prior.status === "running" || prior.status === "partial")
-  ) {
-    const recovered = await maybeRecoverAppleHealthParseCheckpoint({
-      supabase: options.supabase,
-      userId: options.userId,
-      ingestRunId: options.ingestRunId,
-      bucket: primary.bucket,
-      status: prior.status,
-      stats: prior.stats,
-    })
-    if (recovered.recovered) {
-      console.info(
-        "APPLE_HEALTH_ORPHAN_CHECKPOINT_RECOVERED",
-        JSON.stringify({
-          ingestRunId: options.ingestRunId,
-          apple_health_persist: recovered.stats.apple_health_persist ?? null,
-        })
-      )
-      prior = {
-        ...prior,
-        status: "partial",
-        stats: recovered.stats,
-      }
-    } else if (recovered.reason) {
-      console.info(
-        "APPLE_HEALTH_ORPHAN_CHECKPOINT_SKIPPED",
-        JSON.stringify({
-          ingestRunId: options.ingestRunId,
-          reason: recovered.reason,
-        })
-      )
-    }
-  }
+  // Orphan detection is DB-only here (no Storage I/O, no mutation). Expensive
+  // Storage reconstruction + checkpoint write happen only after lease claim.
 
   if (prior.status === "succeeded" && !options.retry) {
-    return {
-      ingestRunId: options.ingestRunId,
-      documentKind: options.documentKind,
-      status: "succeeded",
-      attempt: prior.attempt,
-      parse: {
-        success: true,
-        preview: null,
-        payload: null,
-        warnings: ["Ingest run already succeeded — skipped re-parse."],
-        diagnostics: prior.stats,
-        error: null,
-        contentFingerprint:
-          typeof prior.stats.content_fingerprint === "string"
-            ? prior.stats.content_fingerprint
-            : null,
-      },
-      facts: null,
-      timeline: null,
+    const cloudStillPending = shouldResumeAppleHealthCloudOnly(
+      options.documentKind,
+      prior.stats
+    )
+    if (!cloudStillPending) {
+      return {
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        status: "succeeded",
+        attempt: prior.attempt,
+        parse: {
+          success: true,
+          preview: null,
+          payload: null,
+          warnings: ["Ingest run already succeeded — skipped re-parse."],
+          diagnostics: prior.stats,
+          error: null,
+          contentFingerprint:
+            typeof prior.stats.content_fingerprint === "string"
+              ? prior.stats.content_fingerprint
+              : null,
+        },
+        facts: null,
+        timeline: null,
+      }
     }
   }
 
@@ -301,11 +311,40 @@ async function processIngestRunBody(
     shouldResumeAppleHealthCloudOnly(options.documentKind, prior.stats)
   const resumingPartial =
     prior.status === "partial" ||
+    (prior.status === "succeeded" && appleHealthCloudIncomplete) ||
     (prior.status === "running" &&
       (appleHealthParseIncomplete || appleHealthCloudIncomplete))
 
   const attempt = resumingPartial ? Math.max(1, prior.attempt) : prior.attempt + 1
   if (attempt > parser.maxAttempts) {
+    // Never fail a run that another invocation currently owns.
+    const foreign = readProcessingLease(prior.stats)
+    if (isProcessingLeaseActive(foreign)) {
+      return {
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        status: "skipped_concurrent",
+        attempt: prior.attempt,
+        parse: {
+          success: false,
+          preview: null,
+          payload: null,
+          warnings: [],
+          diagnostics: {
+            skippedConcurrent: true,
+            leaseHeldBy: foreign!.owner,
+            ingestRunId: options.ingestRunId,
+          },
+          error:
+            "This import is already processing in another session. Leave that session open, or try again shortly.",
+          contentFingerprint: null,
+        },
+        facts: null,
+        timeline: null,
+        skippedConcurrent: true,
+        leaseHeldBy: foreign!.owner,
+      }
+    }
     const parse = emptyParseFailure(
       `Exceeded max attempts (${parser.maxAttempts}) for ${parser.id}.`
     )
@@ -328,9 +367,215 @@ async function processIngestRunBody(
     }
   }
 
-  await updateIngestRun(options.supabase, {
+  const leaseOwner =
+    typeof options.leaseOwner === "string" && options.leaseOwner.trim()
+      ? options.leaseOwner.trim()
+      : newProcessingLeaseOwner()
+
+  const claimed = await claimProcessingLease({
+    supabase: options.supabase,
     ingestRunId: options.ingestRunId,
     userId: options.userId,
+    owner: leaseOwner,
+  })
+
+  if (!claimed.ok) {
+    return {
+      ingestRunId: options.ingestRunId,
+      documentKind: options.documentKind,
+      status: "skipped_concurrent",
+      attempt: prior.attempt,
+      parse: {
+        success: false,
+        preview: null,
+        payload: null,
+        warnings: [],
+        diagnostics: {
+          skippedConcurrent: true,
+          leaseHeldBy: claimed.heldBy,
+          ingestRunId: options.ingestRunId,
+        },
+        error:
+          "This import is already processing in another session. Leave that session open, or try again shortly.",
+        contentFingerprint: null,
+      },
+      facts: null,
+      timeline: null,
+      skippedConcurrent: true,
+      leaseHeldBy: claimed.heldBy,
+    }
+  }
+
+  // Canonical post-claim stats — never recover from a pre-claim snapshot.
+  prior = {
+    ...prior,
+    stats: claimed.stats,
+  }
+
+  // Orphan Storage → owned checkpoint write (only while we hold the lease).
+  if (
+    options.documentKind === "apple_health_export" &&
+    isAppleHealthOrphanCheckpointCandidate(prior.status, prior.stats)
+  ) {
+    const recovered = await maybeRecoverAppleHealthParseCheckpoint({
+      supabase: options.supabase,
+      userId: options.userId,
+      ingestRunId: options.ingestRunId,
+      bucket: primary.bucket,
+      status: prior.status,
+      stats: prior.stats,
+      leaseOwner,
+    })
+    if (recovered.recovered) {
+      console.info(
+        "APPLE_HEALTH_ORPHAN_CHECKPOINT_RECOVERED",
+        JSON.stringify({
+          ingestRunId: options.ingestRunId,
+          apple_health_persist: recovered.stats.apple_health_persist ?? null,
+        })
+      )
+      prior = {
+        ...prior,
+        status: "partial",
+        stats: recovered.stats,
+      }
+    } else if (recovered.lostOwnership || recovered.heldBy) {
+      await releaseProcessingLease({
+        supabase: options.supabase,
+        ingestRunId: options.ingestRunId,
+        userId: options.userId,
+        owner: leaseOwner,
+      })
+      return {
+        ingestRunId: options.ingestRunId,
+        documentKind: options.documentKind,
+        status: "skipped_concurrent",
+        attempt: prior.attempt,
+        parse: {
+          success: false,
+          preview: null,
+          payload: null,
+          warnings: [],
+          diagnostics: {
+            skippedConcurrent: true,
+            leaseHeldBy: recovered.heldBy ?? null,
+            ingestRunId: options.ingestRunId,
+            leaseOwnershipLost: recovered.lostOwnership === true,
+          },
+          error:
+            "This import is already processing in another session. Leave that session open, or try again shortly.",
+          contentFingerprint: null,
+        },
+        facts: null,
+        timeline: null,
+        skippedConcurrent: true,
+        leaseHeldBy: recovered.heldBy ?? null,
+      }
+    } else if (recovered.reason) {
+      console.info(
+        "APPLE_HEALTH_ORPHAN_CHECKPOINT_SKIPPED",
+        JSON.stringify({
+          ingestRunId: options.ingestRunId,
+          reason: recovered.reason,
+        })
+      )
+    }
+  }
+
+  try {
+    return await processIngestRunBodyAfterLease(
+      options,
+      parser,
+      factWriter,
+      timelineWriter,
+      primary,
+      files,
+      prior,
+      attempt,
+      leaseOwner
+    )
+  } finally {
+    await releaseProcessingLease({
+      supabase: options.supabase,
+      ingestRunId: options.ingestRunId,
+      userId: options.userId,
+      owner: leaseOwner,
+    })
+  }
+}
+
+function skippedConcurrentResult(
+  options: ProcessIngestOptions,
+  attempt: number,
+  heldBy: string | null
+): ProcessIngestResult {
+  return {
+    ingestRunId: options.ingestRunId,
+    documentKind: options.documentKind,
+    status: "skipped_concurrent",
+    attempt,
+    parse: {
+      success: false,
+      preview: null,
+      payload: null,
+      warnings: [],
+      diagnostics: {
+        skippedConcurrent: true,
+        leaseHeldBy: heldBy,
+        ingestRunId: options.ingestRunId,
+        leaseOwnershipLost: true,
+      },
+      error:
+        "This import is already processing in another session. Leave that session open, or try again shortly.",
+      contentFingerprint: null,
+    },
+    facts: null,
+    timeline: null,
+    skippedConcurrent: true,
+    leaseHeldBy: heldBy,
+  }
+}
+
+async function processIngestRunBodyAfterLease(
+  options: ProcessIngestOptions,
+  parser: DocumentParser,
+  factWriter: FactWriter,
+  timelineWriter: TimelineWriter,
+  primary: NonNullable<Awaited<ReturnType<typeof loadOwnedFile>>>,
+  files: NonNullable<Awaited<ReturnType<typeof loadOwnedFile>>>[],
+  prior: { attempt: number; status: string; stats: Record<string, unknown> },
+  attempt: number,
+  leaseOwner: string
+): Promise<ProcessIngestResult> {
+  let ownershipLost = false
+  const leaseHeartbeat = setInterval(() => {
+    void refreshProcessingLeaseOnly({
+      supabase: options.supabase,
+      ingestRunId: options.ingestRunId,
+      userId: options.userId,
+      owner: leaseOwner,
+    })
+      .then((result) => {
+        if (!result.ok) ownershipLost = true
+      })
+      .catch(() => {
+        ownershipLost = true
+      })
+  }, 60_000)
+  leaseHeartbeat.unref?.()
+
+  const assertStillOwner = () => {
+    if (ownershipLost) {
+      throw new LeaseOwnershipLostError()
+    }
+  }
+
+  try {
+  const started = await updateIngestRunIfLeaseOwner({
+    supabase: options.supabase,
+    ingestRunId: options.ingestRunId,
+    userId: options.userId,
+    owner: leaseOwner,
     status: "running",
     started: true,
     stats: {
@@ -341,6 +586,9 @@ async function processIngestRunBody(
       parser_id: parser.id,
     },
   })
+  if (!started.ok) {
+    return skippedConcurrentResult(options, attempt, null)
+  }
 
   const cloudOnlyResume = shouldResumeAppleHealthCloudOnly(
     options.documentKind,
@@ -351,21 +599,30 @@ async function processIngestRunBody(
   if (!cloudOnlyResume) {
     try {
       for (const file of files) {
+        assertStillOwner()
         allBytes.push(await downloadStoredFile(options.supabase, file))
       }
     } catch (error) {
+      if (isLeaseOwnershipLostError(error)) {
+        return skippedConcurrentResult(options, attempt, null)
+      }
       logIngestException(error, options.ingestRunId, "storage_download")
       const message =
         error instanceof Error ? error.message : "Storage download failed"
       const parse = emptyParseFailure(message)
-      await updateIngestRun(options.supabase, {
+      const failedWrite = await updateIngestRunIfLeaseOwner({
+        supabase: options.supabase,
         ingestRunId: options.ingestRunId,
         userId: options.userId,
+        owner: leaseOwner,
         status: "failed",
         errorSummary: message,
         finished: true,
         stats: { ...prior.stats, attempt, file_id: primary.id },
       })
+      if (!failedWrite.ok) {
+        return skippedConcurrentResult(options, attempt, null)
+      }
       return {
         ingestRunId: options.ingestRunId,
         documentKind: options.documentKind,
@@ -406,6 +663,7 @@ async function processIngestRunBody(
     parse = synthesizeAppleHealthCloudResumeParse(prior.stats)
   } else {
     try {
+      assertStillOwner()
       parse = await parser.parse({
         supabase: options.supabase,
         userId: options.userId,
@@ -418,8 +676,12 @@ async function processIngestRunBody(
         attempt,
         signal: options.signal,
         priorStats: prior.stats,
+        leaseOwner,
       })
     } catch (error) {
+      if (isLeaseOwnershipLostError(error)) {
+        return skippedConcurrentResult(options, attempt, null)
+      }
       // Raw exception first — do not map before this log.
       logIngestException(error, options.ingestRunId, "parser")
       parse = emptyParseFailure(
@@ -467,6 +729,7 @@ async function processIngestRunBody(
 
   if (parse.success && !parseIncomplete) {
     try {
+      assertStillOwner()
       facts = await factWriter.write({
         userId: options.userId,
         ingestRunId: options.ingestRunId,
@@ -487,6 +750,7 @@ async function processIngestRunBody(
         )
       }
 
+      assertStillOwner()
       timeline = await timelineWriter.write({
         userId: options.userId,
         ingestRunId: options.ingestRunId,
@@ -495,6 +759,9 @@ async function processIngestRunBody(
         factWrite: facts,
       })
     } catch (error) {
+      if (isLeaseOwnershipLostError(error)) {
+        return skippedConcurrentResult(options, attempt, null)
+      }
       logIngestException(error, options.ingestRunId, "writers")
       throw error
     }
@@ -527,7 +794,34 @@ async function processIngestRunBody(
   }
 
   const cloudIncomplete = facts?.incomplete === true
-  const incomplete = parseIncomplete || cloudIncomplete
+  let incomplete = parseIncomplete || cloudIncomplete
+
+  let cloudFactPersist =
+    facts?.cloudFactPersist ??
+    readCloudFactPersist(prior.stats) ??
+    null
+
+  // Mid-parse path may finish Storage before facts run; keep AH partial until
+  // cloud_fact_persist.complete.
+  if (
+    options.documentKind === "apple_health_export" &&
+    parse.success &&
+    appleHealthCloudFactsPending({
+      appleHealthPersist:
+        readAppleHealthPersistFromStats(
+          parse.diagnostics && typeof parse.diagnostics === "object"
+            ? {
+                apple_health_persist: (parse.diagnostics as Record<string, unknown>)
+                  .persist,
+              }
+            : null
+        ) ??
+        readAppleHealthPersistFromStats(prior.stats),
+      cloudFactPersist,
+    })
+  ) {
+    incomplete = true
+  }
 
   const status = parse.success
     ? incomplete
@@ -550,11 +844,6 @@ async function processIngestRunBody(
         )
       : null
   const effectiveDomainReplay = domainReplayPersist ?? priorDomainReplay
-
-  const cloudFactPersist =
-    facts?.cloudFactPersist ??
-    readCloudFactPersist(prior.stats) ??
-    null
 
   const diagnosticsJson = {
     ...(baseDiagnostics ?? {}),
@@ -605,20 +894,12 @@ async function processIngestRunBody(
     persistMeta = chosen
   }
 
-  await updateIngestRun(options.supabase, {
-    ingestRunId: options.ingestRunId,
-    userId: options.userId,
-    status,
-    errorSummary: parse.success
-      ? incomplete
-        ? cloudIncomplete && !parseIncomplete
-          ? "Apple Health cloud fact persistence paused; continue required."
-          : "Parse paused under server time limit; continue required."
-        : null
-      : parse.error,
-    finished: !incomplete,
-    diagnosticsJson: diagnosticsForUpdate,
-    stats: {
+  assertStillOwner()
+
+  const finalStats = (() => {
+    // Preserve lease via updateIngestRunIfLeaseOwner(refreshLease);
+    // do not strip it here — release happens in the outer finally.
+    return {
       ...prior.stats,
       attempt,
       document_kind: options.documentKind,
@@ -635,7 +916,6 @@ async function processIngestRunBody(
         options.documentKind === "hevy_csv"
           ? (domainReplayPersist ?? prior.stats.hevy_persist ?? null)
           : (prior.stats.hevy_persist ?? null),
-      // Keep a compact pointer in stats; full payload lives on diagnostics_json.
       diagnostics_summary: diagnosticsRecord
         ? {
             parser_name: diagnosticsRecord.parser_name ?? null,
@@ -654,8 +934,30 @@ async function processIngestRunBody(
       facts_written: facts?.written ?? 0,
       facts_skipped: facts?.skipped ?? 0,
       timeline_written: timeline?.written ?? 0,
-    },
+    }
+  })()
+
+  const finalWrite = await updateIngestRunIfLeaseOwner({
+    supabase: options.supabase,
+    ingestRunId: options.ingestRunId,
+    userId: options.userId,
+    owner: leaseOwner,
+    status,
+    errorSummary: parse.success
+      ? incomplete
+        ? cloudIncomplete && !parseIncomplete
+          ? "Apple Health cloud fact persistence paused; continue required."
+          : "Parse paused under server time limit; continue required."
+        : null
+      : parse.error,
+    finished: !incomplete,
+    diagnosticsJson: diagnosticsForUpdate,
+    stats: finalStats,
+    refreshLease: true,
   })
+  if (!finalWrite.ok) {
+    return skippedConcurrentResult(options, attempt, null)
+  }
 
   return {
     ingestRunId: options.ingestRunId,
@@ -665,6 +967,14 @@ async function processIngestRunBody(
     parse,
     facts,
     timeline,
+  }
+  } catch (error) {
+    if (isLeaseOwnershipLostError(error)) {
+      return skippedConcurrentResult(options, attempt, null)
+    }
+    throw error
+  } finally {
+    clearInterval(leaseHeartbeat)
   }
 }
 

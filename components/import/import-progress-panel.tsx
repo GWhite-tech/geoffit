@@ -20,7 +20,8 @@ function formatEta(seconds: number | null): string {
   return `${minutes}m ${rem}s`
 }
 
-function ProgressBar({ value }: { value: number }) {
+function ProgressBar({ value }: { value: number | null }) {
+  if (value == null) return null
   const clamped = Math.max(0, Math.min(100, value))
   return (
     <div className="mt-5 h-2.5 w-full overflow-hidden rounded-full bg-muted">
@@ -52,9 +53,11 @@ export function ImportProgressPanel({
 
         <ProgressBar value={progress.progress} />
 
-        <p className="mt-3 text-[13px] tabular-nums text-muted-foreground">
-          {Math.round(progress.progress)}%
-        </p>
+        {progress.progress != null ? (
+          <p className="mt-3 text-[13px] tabular-nums text-muted-foreground">
+            {Math.round(progress.progress)}%
+          </p>
+        ) : null}
 
         <div className="mt-8">
           <Button variant="outline" onClick={onCancelImport}>
@@ -80,13 +83,49 @@ export function ImportProgressPanel({
 
       <ProgressBar value={progress.progress} />
 
-      <p className="mt-3 text-[13px] tabular-nums text-muted-foreground">
-        {Math.round(progress.progress)}%
-      </p>
+      {progress.progress != null ? (
+        <p className="mt-3 text-[13px] tabular-nums text-muted-foreground">
+          {Math.round(progress.progress)}%
+        </p>
+      ) : null}
 
-      <p className="mt-5 text-[15px] tabular-nums text-foreground/85">
-        {progress.processedElements.toLocaleString()} XML elements processed
-      </p>
+      {progress.parsePersist ? (
+        <div className="mt-6 rounded-lg bg-muted/40 px-4 py-3 text-[13px] leading-relaxed text-muted-foreground">
+          <p className="font-medium text-foreground/90">Parsing</p>
+          <p className="mt-1 tabular-nums">
+            {progress.parsePersist.recordsMapped.toLocaleString()} records mapped
+            {progress.parsePersist.batchCount > 0
+              ? ` · ${progress.parsePersist.batchCount} storage batch${progress.parsePersist.batchCount === 1 ? "" : "es"}`
+              : ""}
+            {progress.parsePersist.complete ? " · complete" : ""}
+          </p>
+        </div>
+      ) : null}
+
+      {progress.cloudPersist ? (
+        <div className="mt-6 rounded-lg bg-muted/40 px-4 py-3 text-[13px] leading-relaxed text-muted-foreground">
+          <p className="font-medium text-foreground/90">Cloud persistence</p>
+          <p className="mt-1 tabular-nums">
+            Batch{" "}
+            {Math.min(
+              progress.cloudPersist.nextBatchIndex +
+                (progress.cloudPersist.complete ? 0 : 1),
+              progress.cloudPersist.batchCount
+            )}{" "}
+            / {progress.cloudPersist.batchCount}
+          </p>
+          <p className="mt-1 tabular-nums">
+            {progress.cloudPersist.recordsWritten.toLocaleString()} records ·{" "}
+            {progress.cloudPersist.workoutsWritten.toLocaleString()} workouts ·{" "}
+            {progress.cloudPersist.nutritionDaysWritten.toLocaleString()} nutrition
+            days
+          </p>
+        </div>
+      ) : (
+        <p className="mt-5 text-[15px] tabular-nums text-foreground/85">
+          {progress.processedElements.toLocaleString()} XML elements processed
+        </p>
+      )}
 
       {topSkip && reductionPct !== null && reductionPct !== undefined ? (
         <div className="mt-6 rounded-lg bg-muted/40 px-4 py-3 text-[13px] leading-relaxed text-muted-foreground">
@@ -124,40 +163,44 @@ export function ImportProgressPanel({
         </div>
       ) : null}
 
-      <div className="mt-8">
-        <p className="text-[13px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-          Searching for
-        </p>
-        <ul className="mt-3 space-y-1.5 font-mono text-[13px] tabular-nums text-foreground/90">
-          {progress.searchingFor.map((entry) => (
-            <li key={entry.key} className="flex items-baseline gap-2">
-              <span className="text-muted-foreground">•</span>
-              <span className="min-w-[9rem] text-muted-foreground">
-                {entry.label}
-              </span>
-              <span className="flex-1 border-b border-dotted border-border/70" />
-              <span
-                className={
-                  entry.found
-                    ? "min-w-[4.5rem] text-right text-foreground"
-                    : "min-w-[4.5rem] text-right text-muted-foreground"
-                }
-              >
-                {entry.found ? entry.count.toLocaleString() : "—"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {progress.searchingFor.length > 0 && !progress.cloudPersist ? (
+        <div className="mt-8">
+          <p className="text-[13px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+            Searching for
+          </p>
+          <ul className="mt-3 space-y-1.5 font-mono text-[13px] tabular-nums text-foreground/90">
+            {progress.searchingFor.map((entry) => (
+              <li key={entry.key} className="flex items-baseline gap-2">
+                <span className="text-muted-foreground">•</span>
+                <span className="min-w-[9rem] text-muted-foreground">
+                  {entry.label}
+                </span>
+                <span className="flex-1 border-b border-dotted border-border/70" />
+                <span
+                  className={
+                    entry.found
+                      ? "min-w-[4.5rem] text-right text-foreground"
+                      : "min-w-[4.5rem] text-right text-muted-foreground"
+                  }
+                >
+                  {entry.found ? entry.count.toLocaleString() : "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
-      <div className="mt-8">
-        <p className="text-[13px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-          Estimated time remaining
-        </p>
-        <p className="mt-2 text-[17px] text-foreground">
-          {formatEta(progress.estimatedRemainingTime)}
-        </p>
-      </div>
+      {progress.estimatedRemainingTime != null ? (
+        <div className="mt-8">
+          <p className="text-[13px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+            Estimated time remaining
+          </p>
+          <p className="mt-2 text-[17px] text-foreground">
+            {formatEta(progress.estimatedRemainingTime)}
+          </p>
+        </div>
+      ) : null}
 
       <div className="mt-8">
         <Button variant="outline" onClick={onCancelImport}>

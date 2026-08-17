@@ -38,9 +38,23 @@ export {
 export {
   startDocumentIngest,
   retryDocumentIngest,
+  resumeAppleHealthDocumentIngest,
+  isIncompleteIngestResponse,
 } from "./client/start-document-ingest"
 export type {
   IngestProcessApiResponse,
   StartDocumentIngestInput,
   StartDocumentIngestResult,
+  ContinueResumeResult,
 } from "./client/start-document-ingest"
+export {
+  continueAppleHealthIngest,
+  findResumableAppleHealthIngest,
+  isCloudFactPersistFinished,
+  PAUSED_APPLE_HEALTH_INGEST_RUN_IDS,
+  decideAfterTransportFailure,
+} from "./client/continue-apple-health-ingest"
+export type {
+  AppleHealthContinueProgress,
+  ResumableAppleHealthIngest,
+} from "./client/continue-apple-health-ingest"

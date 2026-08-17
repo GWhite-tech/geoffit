@@ -10,6 +10,17 @@ import { uploadIngestDocument } from "@/lib/importers/storage/upload-ingest-docu
 import type { IngestUploadSpec } from "@/lib/importers/storage/types"
 
 import type { DocumentKind } from "../document-kind"
+import {
+  appleHealthCloudFactsPending,
+  cloudFactPersistFromUnknown,
+  isAppleHealthIngestFullyComplete,
+} from "../writers/apple-health-cloud-gate"
+import type { CloudFactPersistState } from "../writers/cloud-fact-persist"
+import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-persist-meta"
+import {
+  continueAppleHealthIngest,
+  type AppleHealthContinueProgress,
+} from "./continue-apple-health-ingest"
 
 export type IngestProcessApiResponse = {
   success: boolean
@@ -64,17 +75,34 @@ async function readIngestProcessResponse(
   }
 }
 
-function isIncompleteIngestResponse(body: IngestProcessApiResponse): boolean {
+/** Exported for unit tests — continue loop gate. */
+export function isIncompleteIngestResponse(
+  body: IngestProcessApiResponse
+): boolean {
   if (!body.success) return false
   const diagnostics = body.diagnostics
   if (diagnostics && typeof diagnostics === "object") {
+    const cloud = cloudFactPersistFromUnknown(diagnostics.cloud_fact_persist)
+    if (
+      isAppleHealthIngestFullyComplete({
+        appleHealthPersist:
+          diagnostics.persist ??
+          (diagnostics as { apple_health_persist?: unknown }).apple_health_persist,
+        cloudFactPersist: cloud,
+      })
+    ) {
+      return false
+    }
     if (diagnostics.incomplete === true) return true
     if (diagnostics.status === "partial") return true
-    const cloud = diagnostics.cloud_fact_persist
+    const persist =
+      diagnostics.persist ??
+      (diagnostics as { apple_health_persist?: unknown }).apple_health_persist
     if (
-      cloud &&
-      typeof cloud === "object" &&
-      (cloud as { complete?: unknown }).complete === false
+      appleHealthCloudFactsPending({
+        appleHealthPersist: persist,
+        cloudFactPersist: cloud,
+      })
     ) {
       return true
     }
@@ -83,6 +111,18 @@ function isIncompleteIngestResponse(body: IngestProcessApiResponse): boolean {
   if (persist && typeof persist === "object") {
     const complete = (persist as { complete?: unknown }).complete
     if (complete === false) return true
+    const diagnosticsObj =
+      body.diagnostics && typeof body.diagnostics === "object"
+        ? body.diagnostics
+        : null
+    if (
+      appleHealthCloudFactsPending({
+        appleHealthPersist: persist,
+        cloudFactPersist: diagnosticsObj?.cloud_fact_persist,
+      })
+    ) {
+      return true
+    }
   }
   return body.payload?.metadata?.incomplete === true
 }
@@ -93,6 +133,8 @@ export type StartDocumentIngestInput = {
   uploadSpec: IngestUploadSpec
   documentKind: DocumentKind
   onProgress?: (ratio: number) => void
+  onContinueProgress?: (progress: AppleHealthContinueProgress) => void
+  signal?: AbortSignal
   /** Skip parse; leave ingest_runs queued for a worker. */
   enqueueOnly?: boolean
 }
@@ -114,6 +156,7 @@ async function postIngestProcess(input: {
   const response = await fetch("/api/ingest/process", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({
       documentKind: input.documentKind,
       fileId: input.fileId,
@@ -126,7 +169,7 @@ async function postIngestProcess(input: {
 
 /**
  * Upload → user_files → ingest_runs → (optional) /api/ingest/process.
- * Large Apple Health exports may need multiple process calls (time budget).
+ * Apple Health automatically continues until parse + cloud_fact_persist complete.
  */
 export async function startDocumentIngest(
   input: StartDocumentIngestInput
@@ -142,6 +185,7 @@ export async function startDocumentIngest(
     await fetch("/api/ingest/process", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({
         documentKind: input.documentKind,
         fileId: uploaded.file.id,
@@ -158,48 +202,84 @@ export async function startDocumentIngest(
     }
   }
 
-  let body = await postIngestProcess({
-    documentKind: input.documentKind,
-    fileId: uploaded.file.id,
-    ingestRunId: uploaded.ingestRunId,
-  })
-
-  // Resume time-budgeted Apple Health (and similar) chunks until complete.
-  const maxContinues =
-    input.documentKind === "apple_health_export" ? 100 : 0
-  let continues = 0
-  while (
-    isIncompleteIngestResponse(body) &&
-    continues < maxContinues
-  ) {
-    continues += 1
-    console.info("[startDocumentIngest] continuing partial ingest", {
-      ingestRunId: uploaded.ingestRunId,
-      documentKind: input.documentKind,
-      continues,
-    })
-    body = await postIngestProcess({
+  if (input.documentKind === "apple_health_export") {
+    const continued = await continueAppleHealthIngest({
       documentKind: input.documentKind,
       fileId: uploaded.file.id,
       ingestRunId: uploaded.ingestRunId,
+      supabase: input.supabase,
+      onProgress: input.onContinueProgress,
+      signal: input.signal,
     })
-  }
 
-  if (isIncompleteIngestResponse(body)) {
+    if (continued.skippedConcurrent && !continued.api) {
+      return {
+        fileId: uploaded.file.id,
+        ingestRunId: uploaded.ingestRunId,
+        documentKind: input.documentKind,
+        reusedExisting: uploaded.reusedExisting,
+        api: {
+          success: false,
+          preview: null,
+          warnings: [],
+          diagnostics: {
+            ingestRunId: uploaded.ingestRunId,
+            skippedConcurrent: true,
+          },
+          error:
+            "Apple Health import is already continuing in another tab. Leave that tab open, or reopen Import shortly.",
+          payload: null,
+        },
+      }
+    }
+
+    if (continued.error || !continued.completed || !continued.api) {
+      return {
+        fileId: uploaded.file.id,
+        ingestRunId: uploaded.ingestRunId,
+        documentKind: input.documentKind,
+        reusedExisting: uploaded.reusedExisting,
+        api: continued.api
+          ? {
+              ...continued.api,
+              success: false,
+              error:
+                continued.error ??
+                continued.api.error ??
+                "Apple Health import did not complete.",
+            }
+          : {
+              success: false,
+              preview: null,
+              warnings: [],
+              diagnostics: {
+                ingestRunId: uploaded.ingestRunId,
+                cloud_fact_persist: continued.finalCursor,
+                apple_health_persist: continued.finalAppleHealthPersist,
+                invocations: continued.invocations,
+                gatewayTimeouts: continued.gatewayTimeouts,
+              },
+              error:
+                continued.error ?? "Apple Health import did not complete.",
+              payload: null,
+            },
+      }
+    }
+
     return {
       fileId: uploaded.file.id,
       ingestRunId: uploaded.ingestRunId,
       documentKind: input.documentKind,
       reusedExisting: uploaded.reusedExisting,
-      api: {
-        ...body,
-        success: false,
-        error:
-          body.error?.trim() ||
-          "Import is still incomplete after the maximum number of continue passes.",
-      },
+      api: continued.api,
     }
   }
+
+  const body = await postIngestProcess({
+    documentKind: input.documentKind,
+    fileId: uploaded.file.id,
+    ingestRunId: uploaded.ingestRunId,
+  })
 
   return {
     fileId: uploaded.file.id,
@@ -208,6 +288,51 @@ export async function startDocumentIngest(
     reusedExisting: uploaded.reusedExisting,
     api: body,
   }
+}
+
+/** Resume an existing Apple Health run (no re-upload). */
+export async function resumeAppleHealthDocumentIngest(input: {
+  supabase?: SupabaseClient | null
+  fileId: string
+  ingestRunId: string
+  priorCursor?: CloudFactPersistState | null
+  priorAppleHealthPersist?: AppleHealthPersistMeta | null
+  onContinueProgress?: (progress: AppleHealthContinueProgress) => void
+  signal?: AbortSignal
+}): Promise<ContinueResumeResult> {
+  const continued = await continueAppleHealthIngest({
+    documentKind: "apple_health_export",
+    fileId: input.fileId,
+    ingestRunId: input.ingestRunId,
+    supabase: input.supabase,
+    priorCursor: input.priorCursor,
+    priorAppleHealthPersist: input.priorAppleHealthPersist,
+    onProgress: input.onContinueProgress,
+    signal: input.signal,
+  })
+  return {
+    fileId: input.fileId,
+    ingestRunId: input.ingestRunId,
+    documentKind: "apple_health_export",
+    api: continued.api,
+    completed: continued.completed,
+    error: continued.error,
+    skippedConcurrent: continued.skippedConcurrent,
+    finalCursor: continued.finalCursor,
+    finalAppleHealthPersist: continued.finalAppleHealthPersist,
+  }
+}
+
+export type ContinueResumeResult = {
+  fileId: string
+  ingestRunId: string
+  documentKind: DocumentKind
+  api: IngestProcessApiResponse | null
+  completed: boolean
+  error: string | null
+  skippedConcurrent: boolean
+  finalCursor: CloudFactPersistState | null
+  finalAppleHealthPersist: AppleHealthPersistMeta | null
 }
 
 /** Retry a failed/queued run (idempotent process). */

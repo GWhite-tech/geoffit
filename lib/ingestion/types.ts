@@ -54,6 +54,8 @@ export type ParseContext = {
   signal?: AbortSignal
   /** Prior ingest_runs.stats — used to resume time-budgeted parsers. */
   priorStats?: Record<string, unknown> | null
+  /** Processing lease owner for ownership-filtered checkpoint writes. */
+  leaseOwner?: string
 }
 
 export type ParseResult = {
@@ -138,14 +140,18 @@ export type ProcessIngestOptions = {
   signal?: AbortSignal
   factWriter?: FactWriter
   timelineWriter?: TimelineWriter
+  /** Optional client-supplied lease owner for single-flight claiming. */
+  leaseOwner?: string
 }
 
 export type ProcessIngestResult = {
   ingestRunId: string
   documentKind: DocumentKind
-  status: IngestRunStatus
+  status: IngestRunStatus | "skipped_concurrent"
   attempt: number
   parse: ParseResult
   facts: FactWriteResult | null
   timeline: TimelineWriteResult | null
+  skippedConcurrent?: boolean
+  leaseHeldBy?: string | null
 }

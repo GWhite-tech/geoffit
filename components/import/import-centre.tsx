@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
 
 import { ImportDropzone } from "@/components/import/import-dropzone"
@@ -11,6 +11,11 @@ import { ImportResultCard } from "@/components/import/import-result-card"
 import { ImportSourcePicker } from "@/components/import/import-source-picker"
 import { ManualBloodEntryPanel } from "@/components/import/manual-blood-entry-panel"
 import { ScreenshotBloodReviewPanel } from "@/components/import/screenshot-blood-review-panel"
+import {
+  findResumableAppleHealthIngest,
+  type ResumableAppleHealthIngest,
+} from "@/lib/ingestion/client/continue-apple-health-ingest"
+import { resumeAppleHealthDocumentIngest } from "@/lib/ingestion/client/start-document-ingest"
 import {
   confirmParsedImport,
   rollbackImportBatch,
@@ -33,6 +38,7 @@ import {
   type AppleHealthProgressEvent,
 } from "@/lib/importers/apple-health/progress"
 import {
+  DATA_SOURCES,
   type DataSourceDefinition,
   type DataSourceId,
 } from "@/lib/importers/sources"
@@ -50,6 +56,7 @@ import type {
   ScreenshotReviewRow,
 } from "@/lib/importers/blood-tests/ResultNormalizer"
 import type { BloodTest } from "@/lib/domain/blood"
+import { createClientOrNull } from "@/lib/supabase/client"
 import { transitions } from "@/lib/theme"
 
 type ImportStage =
@@ -76,11 +83,74 @@ export function ImportCentre() {
   const [profile, setProfile] = useState<ImportProfileToggles>(
     createDefaultImportProfile
   )
+  const [resumable, setResumable] = useState<ResumableAppleHealthIngest | null>(
+    null
+  )
+  const [resumeBusy, setResumeBusy] = useState(false)
 
   const cancelledRef = useRef(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const applyContinueProgress = useCallback(
+    (continueProgress: {
+      message: string
+      progress: number | null
+      phase?: string
+      appleHealthPersist?: {
+        recordsMapped: number
+        batchCount: number
+        complete: boolean
+      } | null
+      cursor: {
+        nextBatchIndex: number
+        batchCount: number
+        recordsWritten: number
+        workoutsWritten: number
+        nutritionDaysWritten: number
+        complete: boolean
+      } | null
+    }) => {
+      setProgress(
+        createEmptyProgressEvent({
+          stage: "mapping_records",
+          progress: continueProgress.progress,
+          message: continueProgress.message,
+          processedElements:
+            continueProgress.appleHealthPersist?.recordsMapped ??
+            continueProgress.cursor?.recordsWritten ??
+            0,
+          continuePhase:
+            (continueProgress.phase as AppleHealthProgressEvent["continuePhase"]) ??
+            null,
+          parsePersist: continueProgress.appleHealthPersist
+            ? {
+                recordsMapped:
+                  continueProgress.appleHealthPersist.recordsMapped,
+                batchCount: continueProgress.appleHealthPersist.batchCount,
+                complete: continueProgress.appleHealthPersist.complete,
+              }
+            : null,
+          cloudPersist: continueProgress.cursor
+            ? {
+                nextBatchIndex: continueProgress.cursor.nextBatchIndex,
+                batchCount: continueProgress.cursor.batchCount,
+                recordsWritten: continueProgress.cursor.recordsWritten,
+                workoutsWritten: continueProgress.cursor.workoutsWritten,
+                nutritionDaysWritten:
+                  continueProgress.cursor.nutritionDaysWritten,
+                complete: continueProgress.cursor.complete,
+              }
+            : null,
+        })
+      )
+    },
+    []
+  )
 
   const resetToSource = useCallback(() => {
     cancelledRef.current = true
+    abortRef.current?.abort()
+    abortRef.current = null
     setStage("select-source")
     setSource(null)
     setPipelinePreview(null)
@@ -88,16 +158,20 @@ export function ImportCentre() {
     setError(null)
     setErrorDetails([])
     setProgress(createEmptyProgressEvent())
+    setResumeBusy(false)
   }, [])
 
   const backToUpload = useCallback(() => {
     cancelledRef.current = true
+    abortRef.current?.abort()
+    abortRef.current = null
     setStage(source ? "upload" : "select-source")
     setPipelinePreview(null)
     setResult(null)
     setError(null)
     setErrorDetails([])
     setProgress(createEmptyProgressEvent())
+    setResumeBusy(false)
   }, [source])
 
   const handleSourceSelect = useCallback((next: DataSourceDefinition) => {
@@ -109,7 +183,102 @@ export function ImportCentre() {
     setStage("upload")
   }, [])
 
-  const handleFilesSelected = useCallback(
+  // Discover resumable AH run — show Continue banner; do not auto-start.
+  useEffect(() => {
+    if (stage !== "select-source") return
+    let cancelled = false
+    void (async () => {
+      const supabase = createClientOrNull()
+      if (!supabase) return
+      const found = await findResumableAppleHealthIngest(supabase)
+      if (cancelled) return
+      setResumable(found)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [stage])
+
+  const handleContinueResumable = useCallback(async () => {
+    if (!resumable || resumeBusy) return
+    const supabase = createClientOrNull()
+    if (!supabase) {
+      setError("Geoffit Cloud is not configured.")
+      setStage("error")
+      return
+    }
+
+    const ahSource =
+      DATA_SOURCES.find((item) => item.id === "apple-health") ?? null
+    setSource(ahSource)
+    setResumeBusy(true)
+    setStage("progress")
+    setError(null)
+    setErrorDetails([])
+    cancelledRef.current = false
+    applyContinueProgress({
+      message: "Apple Health import in progress",
+      progress:
+        resumable.cloudFactPersist && resumable.cloudFactPersist.batchCount > 0
+          ? Math.round(
+              (resumable.cloudFactPersist.nextBatchIndex /
+                resumable.cloudFactPersist.batchCount) *
+                100
+            )
+          : null,
+      phase: resumable.appleHealthPersistComplete ? "processing" : "parsing",
+      appleHealthPersist: resumable.appleHealthPersist,
+      cursor: resumable.cloudFactPersist,
+    })
+
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const resumed = await resumeAppleHealthDocumentIngest({
+      supabase,
+      fileId: resumable.fileId,
+      ingestRunId: resumable.ingestRunId,
+      priorCursor: resumable.cloudFactPersist,
+      priorAppleHealthPersist: resumable.appleHealthPersist,
+      onContinueProgress: applyContinueProgress,
+      signal: controller.signal,
+    })
+
+    setResumeBusy(false)
+    if (cancelledRef.current) return
+
+    if (resumed.skippedConcurrent && !resumed.api) {
+      setError(
+        "Apple Health import is already continuing in another tab. Leave that tab open."
+      )
+      setStage("error")
+      return
+    }
+
+    if (!resumed.completed || !resumed.api?.success) {
+      setError(
+        resumed.error?.trim() ||
+          resumed.api?.error?.trim() ||
+          "Apple Health import did not complete."
+      )
+      setErrorDetails([])
+      setStage("error")
+      return
+    }
+
+    const preview = toClientImportPreview(resumed.api)
+    if (!preview) {
+      setError("Server returned an empty import preview.")
+      setStage("error")
+      return
+    }
+    setResumable(null)
+    setPipelinePreview(preview)
+    setStage("preview")
+  }, [applyContinueProgress, resumable, resumeBusy])
+
+    const handleFilesSelected = useCallback(
     async (files: File[]) => {
       if (!source || files.length === 0) return
 
@@ -153,10 +322,13 @@ export function ImportCentre() {
       setStage("progress")
       setProgress(
         createEmptyProgressEvent({
+          continuePhase: "uploading",
           message: usesDirectStorageUpload(source.id)
             ? files.length > 1
               ? `Uploading ${files.length} files to secure storage…`
-              : `Uploading ${source.label} to secure storage…`
+              : source.id === "apple-health"
+                ? "Uploading Apple Health"
+                : `Uploading ${source.label} to secure storage…`
             : files.length > 1
               ? `Uploading ${files.length} ${source.label.toLowerCase()} for OCR…`
               : `Uploading ${source.label} file for server-side parsing…`,
@@ -165,8 +337,13 @@ export function ImportCentre() {
       )
 
       try {
+        abortRef.current?.abort()
+        const controller = new AbortController()
+        abortRef.current = controller
         const apiResult = await uploadImportFiles(source.id, files, {
           profile: source.id === "apple-health" ? profile : undefined,
+          signal: controller.signal,
+          onContinueProgress: applyContinueProgress,
         })
 
         if (cancelledRef.current) return
@@ -228,6 +405,7 @@ export function ImportCentre() {
           return
         }
 
+        setResumable(null)
         setPipelinePreview(preview)
         setStage("preview")
       } catch (err) {
@@ -251,7 +429,7 @@ export function ImportCentre() {
         setStage("error")
       }
     },
-    [profile, source]
+    [applyContinueProgress, profile, source]
   )
 
   const handleFileSelected = useCallback(
@@ -449,10 +627,30 @@ export function ImportCentre() {
 
       <div className="mt-10 space-y-8">
         {stage === "select-source" ? (
-          <ImportSourcePicker
-            selectedId={selectedSourceId}
-            onSelect={handleSourceSelect}
-          />
+          <>
+            {resumable ? (
+              <div className="surface-functional space-y-3 p-6">
+                <p className="text-[15px] font-medium text-foreground">
+                  Apple Health import in progress
+                </p>
+                <p className="text-[14px] text-muted-foreground">
+                  Resume the same import without re-uploading your ZIP.
+                </p>
+                <button
+                  type="button"
+                  disabled={resumeBusy}
+                  onClick={() => void handleContinueResumable()}
+                  className="rounded-md bg-primary px-4 py-2 text-[14px] font-medium text-primary-foreground disabled:opacity-60"
+                >
+                  Continue
+                </button>
+              </div>
+            ) : null}
+            <ImportSourcePicker
+              selectedId={selectedSourceId}
+              onSelect={handleSourceSelect}
+            />
+          </>
         ) : null}
 
         {(stage === "upload" || stage === "error") && source ? (
@@ -521,7 +719,13 @@ export function ImportCentre() {
           <ImportProgressPanel
             progress={progress}
             onCancelImport={backToUpload}
-            mode="simple"
+            mode={
+              source?.id === "apple-health" ||
+              progress.cloudPersist ||
+              progress.parsePersist
+                ? "apple-health"
+                : "simple"
+            }
           />
         ) : null}
 

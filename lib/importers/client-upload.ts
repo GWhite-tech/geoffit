@@ -8,6 +8,7 @@
 
 import { createClientOrNull } from "@/lib/supabase/client"
 import { startDocumentIngest } from "@/lib/ingestion/client/start-document-ingest"
+import type { AppleHealthContinueProgress } from "@/lib/ingestion/client/continue-apple-health-ingest"
 import { documentKindForSource } from "@/lib/ingestion/source-map"
 import {
   APPLE_HEALTH_UPLOAD,
@@ -81,7 +82,11 @@ export function extensionAllowed(
 
 async function uploadViaIngestionSpine(
   sourceId: DataSourceId,
-  file: File
+  file: File,
+  options: {
+    onContinueProgress?: (progress: AppleHealthContinueProgress) => void
+    signal?: AbortSignal
+  } = {}
 ): Promise<ClientImportApiResponse> {
   const spec = SOURCE_UPLOAD_SPECS[sourceId]
   const kind = documentKindForSource(sourceId) as DocumentKind | null
@@ -115,6 +120,8 @@ async function uploadViaIngestionSpine(
       file,
       uploadSpec: spec,
       documentKind: kind,
+      onContinueProgress: options.onContinueProgress,
+      signal: options.signal,
     })
     if (!started.api) {
       return {
@@ -145,7 +152,11 @@ async function uploadViaIngestionSpine(
 export async function uploadImportFile(
   sourceId: DataSourceId,
   file: File,
-  options: { profile?: ImportProfileToggles } = {}
+  options: {
+    profile?: ImportProfileToggles
+    onContinueProgress?: (progress: AppleHealthContinueProgress) => void
+    signal?: AbortSignal
+  } = {}
 ): Promise<ClientImportApiResponse> {
   return uploadImportFiles(sourceId, [file], options)
 }
@@ -153,7 +164,11 @@ export async function uploadImportFile(
 export async function uploadImportFiles(
   sourceId: DataSourceId,
   files: File[],
-  options: { profile?: ImportProfileToggles } = {}
+  options: {
+    profile?: ImportProfileToggles
+    onContinueProgress?: (progress: AppleHealthContinueProgress) => void
+    signal?: AbortSignal
+  } = {}
 ): Promise<ClientImportApiResponse> {
   const endpoint = getImportEndpoint(sourceId)
   if (!endpoint && !usesDirectStorageUpload(sourceId)) {
@@ -189,7 +204,10 @@ export async function uploadImportFiles(
         payload: null,
       }
     }
-    return uploadViaIngestionSpine(sourceId, files[0]!)
+    return uploadViaIngestionSpine(sourceId, files[0]!, {
+      onContinueProgress: options.onContinueProgress,
+      signal: options.signal,
+    })
   }
 
   const form = new FormData()

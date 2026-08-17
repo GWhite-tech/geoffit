@@ -24,6 +24,7 @@ type Body = {
   fileIds?: string[]
   ingestRunId?: string
   retry?: boolean
+  leaseOwner?: string
   /** Queue only — do not parse (background worker will call again without this flag). */
   enqueueOnly?: boolean
 }
@@ -53,6 +54,10 @@ export async function POST(request: Request) {
     const documentKind = body.documentKind
     const fileId = body.fileId?.trim()
     const ingestRunId = body.ingestRunId?.trim()
+    const leaseOwner =
+      body.leaseOwner?.trim() ||
+      request.headers.get("x-geoffit-lease-owner")?.trim() ||
+      undefined
 
     if (!documentKind || !fileId || !ingestRunId) {
       return NextResponse.json(
@@ -113,7 +118,27 @@ export async function POST(request: Request) {
       fileIds: body.fileIds,
       ingestRunId,
       retry: Boolean(body.retry),
+      leaseOwner,
     })
+
+    if (result.skippedConcurrent || result.status === "skipped_concurrent") {
+      return NextResponse.json(
+        importApiFailure({
+          error:
+            result.parse.error ??
+            "This import is already processing in another session.",
+          errorCode: "skipped_concurrent",
+          warnings: result.parse.warnings,
+          diagnostics: {
+            skippedConcurrent: true,
+            leaseHeldBy: result.leaseHeldBy ?? null,
+            ingestRunId: result.ingestRunId,
+            status: result.status,
+          },
+        }),
+        { status: 409 }
+      )
+    }
 
     if (!result.parse.success || !result.parse.preview || !result.parse.payload) {
       const errorCode =

@@ -27,8 +27,8 @@ export interface SearchingForMetric {
 
 export interface AppleHealthProgressEvent {
   stage: AppleHealthImportStage
-  /** Overall progress from 0–100. */
-  progress: number
+  /** Overall progress from 0–100, or null when only counts are known. */
+  progress: number | null
   processedElements: number
   supportedRecordsFound: number
   /** Seconds remaining, when estimable (based on enabled-record throughput). */
@@ -43,6 +43,30 @@ export interface AppleHealthProgressEvent {
   searchingFor: SearchingForMetric[]
   /** Work avoided by the active import profile. */
   reduction: ImportReductionEstimate | null
+  /** Durable cloud persist cursor (server checkpoints). */
+  cloudPersist?: {
+    nextBatchIndex: number
+    batchCount: number
+    recordsWritten: number
+    workoutsWritten: number
+    nutritionDaysWritten: number
+    complete: boolean
+  } | null
+  /** Durable parse checkpoint. */
+  parsePersist?: {
+    recordsMapped: number
+    batchCount: number
+    complete: boolean
+  } | null
+  /** High-level continue phase label. */
+  continuePhase?:
+    | "uploading"
+    | "parsing"
+    | "processing"
+    | "finishing"
+    | "complete"
+    | "waiting"
+    | null
 }
 
 export interface AppleHealthParseOptions {
@@ -149,6 +173,9 @@ export function createEmptyProgressEvent(
     foundRecordTypes: [],
     searchingFor: buildSearchingFor(metrics),
     reduction: null,
+    cloudPersist: null,
+    parsePersist: null,
+    continuePhase: null,
     ...overrides,
   }
 }

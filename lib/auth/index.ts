@@ -14,6 +14,14 @@ export {
   resolveSafeAuthNext,
 } from "./safe-next"
 export {
+  resolveAuthShellPhase,
+  resolveShellDisplayName,
+  resolveShellEmail,
+  resolveShellInitials,
+  shouldRenderAppShell,
+} from "./startup-shell"
+export type { AuthShellPhase } from "./startup-shell"
+export {
   createProfile,
   ensureAuthenticatedProfile,
   ensureProfile,

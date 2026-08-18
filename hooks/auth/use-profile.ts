@@ -1,7 +1,7 @@
 "use client"
 
 import { useAuthContext } from "@/components/auth/auth-provider"
-import { greetingName } from "@/lib/auth"
+import { resolveShellDisplayName } from "@/lib/auth/startup-shell"
 
 export function useProfile() {
   const { profile, loading, refreshProfile, setProfile, user } = useAuthContext()
@@ -10,7 +10,7 @@ export function useProfile() {
     loading,
     refreshProfile,
     setProfile,
-    greetingName: greetingName(profile),
+    greetingName: resolveShellDisplayName(profile, user),
     userId: user?.id ?? profile?.id ?? null,
   }
 }

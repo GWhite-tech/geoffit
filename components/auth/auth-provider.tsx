@@ -18,6 +18,7 @@ type AuthContextValue = {
   user: User | null
   session: Session | null
   profile: Profile | null
+  /** True only until getSession() resolves — never held for profile fetch. */
   loading: boolean
   configured: boolean
   refreshProfile: () => Promise<void>
@@ -75,9 +76,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!mounted) return
       setSession(data.session)
       setUser(data.session?.user ?? null)
-      void loadProfile(data.session?.user ?? null).finally(() => {
-        if (mounted) setLoading(false)
-      })
+      // Shell must not wait on profiles — load in the background.
+      setLoading(false)
+      void loadProfile(data.session?.user ?? null)
     })
 
     const {

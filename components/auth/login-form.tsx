@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { loginAction } from "@/lib/auth/actions"
 import { DEFAULT_AUTH_REDIRECT } from "@/lib/auth/constants"
+import { resolveSafeAuthNext } from "@/lib/auth/safe-next"
 
 import {
   authInputClassName,
@@ -37,11 +38,10 @@ export function LoginForm() {
         setFieldErrors(result.fieldErrors ?? {})
         return
       }
-      const next = searchParams.get("next")
-      const target =
-        next && next.startsWith("/") && !next.startsWith("//")
-          ? next
-          : result.redirectTo ?? DEFAULT_AUTH_REDIRECT
+      const target = resolveSafeAuthNext(
+        searchParams.get("next"),
+        result.redirectTo ?? DEFAULT_AUTH_REDIRECT
+      )
       router.replace(target)
       router.refresh()
     })

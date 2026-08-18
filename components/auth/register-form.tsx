@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -21,6 +21,7 @@ import {
 
 export function RegisterForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { setTheme } = useTheme()
   const [pending, startTransition] = useTransition()
   const [firstName, setFirstName] = useState("")
@@ -41,6 +42,7 @@ export function RegisterForm() {
     setSuccess(null)
     setFieldErrors({})
     startTransition(async () => {
+      const next = searchParams.get("next")
       const result = await registerAction({
         firstName,
         lastName,
@@ -50,6 +52,7 @@ export function RegisterForm() {
         theme,
         units,
         acceptTerms,
+        next,
       })
       if (!result.ok) {
         setError(result.error)

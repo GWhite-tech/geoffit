@@ -1,6 +1,7 @@
-import Link from "next/link"
+import { Suspense } from "react"
 
 import { AuthShell } from "@/components/auth/auth-shell"
+import { AuthNextLink } from "@/components/auth/auth-next-link"
 import { RegisterForm } from "@/components/auth/register-form"
 
 export const metadata = {
@@ -15,13 +16,17 @@ export default function RegisterPage() {
       footer={
         <>
           Already have an account?{" "}
-          <Link href="/login" className="text-primary hover:underline">
-            Sign in
-          </Link>
+          <Suspense fallback={<span className="text-primary">Sign in</span>}>
+            <AuthNextLink href="/login" className="text-primary hover:underline">
+              Sign in
+            </AuthNextLink>
+          </Suspense>
         </>
       }
     >
-      <RegisterForm />
+      <Suspense fallback={<p className="text-sm text-muted-foreground">Loading…</p>}>
+        <RegisterForm />
+      </Suspense>
     </AuthShell>
   )
 }

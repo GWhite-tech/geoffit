@@ -32,6 +32,8 @@ export type RegisterInput = {
   theme: ThemePreference
   units: UnitsPreference
   acceptTerms: boolean
+  /** Optional post-auth return path (`?next=`). Validated server-side. */
+  next?: string | null
 }
 
 export type LoginInput = {

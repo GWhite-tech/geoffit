@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 
-import { DEFAULT_AUTH_REDIRECT } from "@/lib/auth/constants"
+import { resolveSafeAuthNext } from "@/lib/auth/safe-next"
 import { createClient } from "@/lib/supabase/server"
 
 /**
@@ -9,11 +9,7 @@ import { createClient } from "@/lib/supabase/server"
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = request.nextUrl
   const code = searchParams.get("code")
-  const nextParam = searchParams.get("next")
-  const next =
-    nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
-      ? nextParam
-      : DEFAULT_AUTH_REDIRECT
+  const next = resolveSafeAuthNext(searchParams.get("next"))
 
   if (code) {
     const supabase = await createClient()
@@ -24,6 +20,9 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.redirect(
-    new URL(`/login?error=auth_callback&next=${encodeURIComponent(next)}`, origin)
+    new URL(
+      `/login?error=auth_callback&next=${encodeURIComponent(next)}`,
+      origin
+    )
   )
 }

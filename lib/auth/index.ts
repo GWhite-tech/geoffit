@@ -8,6 +8,12 @@ export {
 } from "./constants"
 export { toFriendlyAuthError } from "./errors"
 export {
+  authCallbackUrlWithNext,
+  authHrefWithNext,
+  parseSafeAuthNext,
+  resolveSafeAuthNext,
+} from "./safe-next"
+export {
   createProfile,
   ensureAuthenticatedProfile,
   ensureProfile,

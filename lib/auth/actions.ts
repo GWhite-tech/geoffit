@@ -14,6 +14,10 @@ import {
   SESSION_ONLY_MAX_AGE_SECONDS,
 } from "./constants"
 import { toFriendlyAuthError } from "./errors"
+import {
+  authCallbackUrlWithNext,
+  resolveSafeAuthNext,
+} from "./safe-next"
 import { ensureUserPreferences } from "@/lib/preferences/repository"
 import { defaultUserPreferences } from "@/lib/preferences/types"
 
@@ -102,12 +106,13 @@ export async function registerAction(
     const supabase = await createClient()
     const origin = await resolveOrigin()
     const email = input.email.trim().toLowerCase()
+    const safeNext = resolveSafeAuthNext(input.next)
 
     const { data, error } = await supabase.auth.signUp({
       email,
       password: input.password,
       options: {
-        emailRedirectTo: `${origin}/auth/callback?next=${encodeURIComponent(DEFAULT_AUTH_REDIRECT)}`,
+        emailRedirectTo: authCallbackUrlWithNext(origin, safeNext),
         data: {
           first_name: input.firstName.trim(),
           last_name: input.lastName.trim(),
@@ -156,7 +161,7 @@ export async function registerAction(
             "Account created, but profile setup failed. Sign in and visit Account to retry — or apply the profiles + preferences migrations.",
         }
       }
-      return { ok: true, redirectTo: DEFAULT_AUTH_REDIRECT }
+      return { ok: true, redirectTo: safeNext }
     }
 
     // Email confirmation required — profile trigger (SQL) should still insert.
@@ -266,7 +271,7 @@ export async function forgotPasswordAction(
     const { error } = await supabase.auth.resetPasswordForEmail(
       email.trim().toLowerCase(),
       {
-        redirectTo: `${origin}/auth/callback?next=${encodeURIComponent("/reset-password")}`,
+        redirectTo: authCallbackUrlWithNext(origin, "/reset-password"),
       }
     )
     if (error) return { ok: false, error: toFriendlyAuthError(error) }

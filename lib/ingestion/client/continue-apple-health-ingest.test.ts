@@ -13,8 +13,11 @@ import type { AppleHealthPersistMeta } from "@/lib/importers/apple-health/batch-
 import {
   browserFetch,
   checkpointProgressKey,
+  classifyAppleHealthResumableRuns,
   continueAppleHealthIngest,
   decideAfterTransportFailure,
+  discoverAppleHealthResumableIngests,
+  evaluateResumableAppleHealthRun,
   findResumableAppleHealthIngest,
   isCloudFactPersistFinished,
   isRetryableIngestHttpStatus,
@@ -648,16 +651,27 @@ describe("Apple Health automatic continue orchestration", () => {
     assert.match(result.error ?? "", /paused/i)
   })
 
-  it("findResumable discovers partial cloud runs and excludes paused id", async () => {
+  it("findResumable / discover: current tip only; history separate; denylist + empty queued excluded", async () => {
     const pausedId = [...PAUSED_APPLE_HEALTH_INGEST_RUN_IDS][0]!
     const rows = [
       {
-        id: pausedId,
-        status: "partial",
-        updated_at: "2026-08-17T00:00:00Z",
+        id: "09200d45-empty-queued",
+        status: "queued",
+        created_at: "2026-08-17T20:50:00Z",
+        updated_at: "2026-08-17T20:50:00Z",
         stats: {
           document_kind: "apple_health_export",
-          file_id: "file-paused",
+          file_id: "file-shared",
+        },
+      },
+      {
+        id: pausedId,
+        status: "partial",
+        created_at: "2026-08-17T18:00:00Z",
+        updated_at: "2026-08-17T19:30:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-shared",
           apple_health_persist: ahPersist({
             batchCount: 69,
             recordsMapped: 340792,
@@ -671,22 +685,63 @@ describe("Apple Health automatic continue orchestration", () => {
         },
       },
       {
-        id: "run-partial",
-        status: "partial",
-        updated_at: "2026-08-16T00:00:00Z",
+        id: "21e5947c-legacy",
+        status: "running",
+        created_at: "2026-08-13T09:00:00Z",
+        updated_at: "2026-08-13T14:55:00Z",
         stats: {
           document_kind: "apple_health_export",
-          file_id: "file-partial",
+          file_id: "file-shared",
+          apple_health_persist: ahPersist({
+            batchCount: 69,
+            recordsMapped: 341528,
+            complete: true,
+          }),
+          cloud_fact_persist: cursor({
+            nextBatchIndex: 7,
+            batchCount: 69,
+            complete: false,
+            recordsWritten: 100,
+          }),
+        },
+      },
+      {
+        id: "run-older-incomplete",
+        status: "partial",
+        created_at: "2026-08-10T00:00:00Z",
+        updated_at: "2026-08-10T01:00:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-old",
           apple_health_persist: ahPersist({
             batchCount: 10,
             recordsMapped: 1000,
             complete: true,
           }),
           cloud_fact_persist: cursor({
-            nextBatchIndex: 4,
+            nextBatchIndex: 2,
             batchCount: 10,
             complete: false,
-            recordsWritten: 100,
+          }),
+        },
+      },
+      {
+        id: "run-complete",
+        status: "succeeded",
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-01T02:00:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-done",
+          apple_health_persist: ahPersist({
+            batchCount: 2,
+            recordsMapped: 100,
+            complete: true,
+          }),
+          cloud_fact_persist: cursor({
+            nextBatchIndex: 2,
+            batchCount: 2,
+            complete: true,
           }),
         },
       },
@@ -713,10 +768,148 @@ describe("Apple Health automatic continue orchestration", () => {
       },
     }
 
+    const discovery = await discoverAppleHealthResumableIngests(supabase as never)
+    // Newest AH tip is empty queued → not resumable → no current banner.
+    assert.equal(discovery.current, null)
+    // Legacy incompletes surface as previous, newest → oldest; denylist excluded.
+    assert.deepEqual(
+      discovery.previous.map((r) => r.ingestRunId),
+      ["21e5947c-legacy", "run-older-incomplete"]
+    )
+    assert.equal(discovery.previous[0]?.fileId, "file-shared")
+    assert.equal(discovery.previous[1]?.fileId, "file-old")
+
     const found = await findResumableAppleHealthIngest(supabase as never)
-    assert.ok(found)
-    assert.equal(found.ingestRunId, "run-partial")
-    assert.equal(found.fileId, "file-partial")
+    assert.equal(found, null)
+  })
+
+  it("classify: newest qualifying tip becomes current; older stay previous", () => {
+    const discovery = classifyAppleHealthResumableRuns([
+      {
+        id: "run-current",
+        status: "partial",
+        created_at: "2026-08-18T10:00:00Z",
+        updated_at: "2026-08-18T10:05:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-new",
+          apple_health_persist: ahPersist({
+            batchCount: 5,
+            recordsMapped: 500,
+            complete: false,
+          }),
+        },
+      },
+      {
+        id: "run-old",
+        status: "running",
+        created_at: "2026-08-13T09:00:00Z",
+        updated_at: "2026-08-17T12:00:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-old",
+          apple_health_persist: ahPersist({
+            batchCount: 69,
+            recordsMapped: 341528,
+            complete: true,
+          }),
+          cloud_fact_persist: cursor({
+            nextBatchIndex: 7,
+            batchCount: 69,
+            complete: false,
+          }),
+        },
+      },
+    ])
+
+    assert.equal(discovery.current?.ingestRunId, "run-current")
+    assert.equal(discovery.current?.fileId, "file-new")
+    assert.deepEqual(
+      discovery.previous.map((r) => r.ingestRunId),
+      ["run-old"]
+    )
+    assert.equal(discovery.previous[0]?.fileId, "file-old")
+  })
+
+  it("classify: denylisted tip does not promote older run to current", () => {
+    const pausedId = [...PAUSED_APPLE_HEALTH_INGEST_RUN_IDS][0]!
+    const discovery = classifyAppleHealthResumableRuns([
+      {
+        id: pausedId,
+        status: "partial",
+        created_at: "2026-08-17T18:00:00Z",
+        updated_at: "2026-08-17T19:30:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-shared",
+          apple_health_persist: ahPersist({
+            batchCount: 69,
+            recordsMapped: 340792,
+            complete: true,
+          }),
+          cloud_fact_persist: cursor({
+            nextBatchIndex: 9,
+            batchCount: 69,
+            complete: false,
+          }),
+        },
+      },
+      {
+        id: "21e5947c-legacy",
+        status: "running",
+        created_at: "2026-08-13T09:00:00Z",
+        updated_at: "2026-08-13T14:55:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-shared",
+          apple_health_persist: ahPersist({
+            batchCount: 69,
+            recordsMapped: 341528,
+            complete: true,
+          }),
+          cloud_fact_persist: cursor({
+            nextBatchIndex: 7,
+            batchCount: 69,
+            complete: false,
+          }),
+        },
+      },
+    ])
+
+    assert.equal(discovery.current, null)
+    assert.deepEqual(
+      discovery.previous.map((r) => r.ingestRunId),
+      ["21e5947c-legacy"]
+    )
+  })
+
+  it("evaluate: empty queued shell is not resumable", () => {
+    assert.equal(
+      evaluateResumableAppleHealthRun({
+        id: "09200d45",
+        status: "queued",
+        created_at: "2026-08-17T20:50:00Z",
+        stats: {
+          document_kind: "apple_health_export",
+          file_id: "file-1",
+        },
+      }),
+      null
+    )
+  })
+
+  it("Continue path keeps exact fileId + ingestRunId from discovery", async () => {
+    const src = readFileSync(
+      path.join(
+        process.cwd(),
+        "components/import/import-centre.tsx"
+      ),
+      "utf8"
+    )
+    assert.match(src, /fileId:\s*target\.fileId/)
+    assert.match(src, /ingestRunId:\s*target\.ingestRunId/)
+    assert.match(src, /discoverAppleHealthResumableIngests/)
+    assert.match(src, /Previous Apple Health imports/)
   })
 
   it("final cursor completion matches isIncompleteIngestResponse false", async () => {

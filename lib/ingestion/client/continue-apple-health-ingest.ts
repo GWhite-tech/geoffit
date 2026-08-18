@@ -1024,91 +1024,230 @@ export type ResumableAppleHealthIngest = {
   appleHealthPersistComplete: boolean
   batchCount: number
   updatedAt: string | null
+  createdAt: string | null
+}
+
+export function formatAppleHealthResumableSummary(
+  run: ResumableAppleHealthIngest
+): string {
+  const records = run.appleHealthPersist?.recordsMapped
+  const cloud = run.cloudFactPersist
+  const parts: string[] = []
+
+  if (typeof records === "number" && records > 0) {
+    parts.push(`${records.toLocaleString("en-GB")} records parsed`)
+  }
+
+  if (run.appleHealthPersistComplete && cloud) {
+    parts.push(
+      `Cloud ${cloud.nextBatchIndex} / ${cloud.batchCount} batches complete`
+    )
+  } else if (run.appleHealthPersist && !run.appleHealthPersistComplete) {
+    parts.push(
+      `Parse checkpoint ${run.appleHealthPersist.batchCount} batches`
+    )
+  } else if (cloud) {
+    parts.push(
+      `Cloud ${cloud.nextBatchIndex} / ${cloud.batchCount} batches complete`
+    )
+  }
+
+  return parts.join(" · ") || "Resume without re-uploading your ZIP."
+}
+
+export function formatAppleHealthResumableDate(
+  iso: string | null | undefined
+): string {
+  if (!iso) return "Unknown date"
+  const ms = Date.parse(iso)
+  if (!Number.isFinite(ms)) return "Unknown date"
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(ms))
+}
+
+export type AppleHealthResumableDiscovery = {
+  /** Latest Apple Health attempt, only when that run itself is resumable. */
+  current: ResumableAppleHealthIngest | null
+  /** Older incomplete AH runs (newest → oldest). Never includes `current`. */
+  previous: ResumableAppleHealthIngest[]
+}
+
+export type AppleHealthIngestRunRow = {
+  id: unknown
+  status: unknown
+  stats: unknown
+  updated_at?: unknown
+  created_at?: unknown
+}
+
+function isAppleHealthDocumentStats(
+  stats: Record<string, unknown>
+): boolean {
+  const kind = stats.document_kind
+  if (kind === "apple_health_export") return true
+  if (kind != null) return false
+  return (
+    readAppleHealthPersistFromUnknown(stats.apple_health_persist) != null ||
+    cloudFactPersistFromUnknown(stats.cloud_fact_persist) != null
+  )
 }
 
 /**
- * Find the newest resumable Apple Health run for the signed-in user.
- * Excludes paused recovery runs (e.g. ca4798ec). Does not start processing.
+ * A run is resumable only with legitimate parse/cloud checkpoint state.
+ * Empty queued shells (no AH/cloud persist) never qualify.
  */
-export async function findResumableAppleHealthIngest(
-  supabase: SupabaseClient
-): Promise<ResumableAppleHealthIngest | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return null
+export function evaluateResumableAppleHealthRun(
+  row: AppleHealthIngestRunRow
+): ResumableAppleHealthIngest | null {
+  const ingestRunId = String(row.id)
+  if (PAUSED_APPLE_HEALTH_INGEST_RUN_IDS.has(ingestRunId)) return null
 
-  const { data, error } = await supabase
-    .from("ingest_runs")
-    .select("id, status, stats, updated_at")
-    .eq("user_id", user.id)
-    .in("status", ["running", "partial"])
-    .order("updated_at", { ascending: false })
-    .limit(30)
+  const stats =
+    row.stats && typeof row.stats === "object"
+      ? (row.stats as Record<string, unknown>)
+      : null
+  if (!stats) return null
 
-  if (error || !data) return null
+  const kind = stats.document_kind
+  if (kind != null && kind !== "apple_health_export") return null
 
-  for (const row of data) {
+  const ah = readAppleHealthPersistFromUnknown(stats.apple_health_persist)
+  const cloud = cloudFactPersistFromUnknown(stats.cloud_fact_persist)
+
+  // Need some AH signal (parse started or cloud cursor).
+  if (!ah && !cloud) return null
+
+  if (
+    isAppleHealthIngestFullyComplete({
+      appleHealthPersist: ah,
+      cloudFactPersist: cloud,
+    })
+  ) {
+    return null
+  }
+
+  const fileId =
+    typeof stats.file_id === "string" && stats.file_id.trim()
+      ? stats.file_id.trim()
+      : null
+  if (!fileId) return null
+
+  const parseIncomplete = ah != null && ah.complete === false
+  const cloudIncomplete =
+    ah?.complete === true &&
+    appleHealthCloudFactsPending({
+      appleHealthPersist: ah,
+      cloudFactPersist: cloud,
+    })
+  const partialOrRunning =
+    row.status === "partial" || row.status === "running"
+
+  if (!partialOrRunning) return null
+  if (!parseIncomplete && !cloudIncomplete && !ah) return null
+  if (!parseIncomplete && !cloudIncomplete) return null
+
+  return {
+    ingestRunId,
+    fileId,
+    status: String(row.status),
+    cloudFactPersist: cloud,
+    appleHealthPersist: ah,
+    appleHealthPersistComplete: ah?.complete === true,
+    batchCount: ah?.batchCount ?? cloud?.batchCount ?? 0,
+    updatedAt: typeof row.updated_at === "string" ? row.updated_at : null,
+    createdAt: typeof row.created_at === "string" ? row.created_at : null,
+  }
+}
+
+/**
+ * Split Apple Health runs into current vs historical resumables.
+ *
+ * Current = the newest Apple Health attempt by `created_at`, but only when that
+ * attempt itself is a qualifying resumable run. A denylisted tip still occupies
+ * the "latest attempt" slot so older incompletes never promote into the primary
+ * banner. Empty queued shells and finished runs likewise yield no current banner.
+ *
+ * Uses existing ingest_runs chronology (`created_at`) — no migration.
+ */
+export function classifyAppleHealthResumableRuns(
+  rows: AppleHealthIngestRunRow[]
+): AppleHealthResumableDiscovery {
+  const ordered = [...rows].sort((a, b) => {
+    const ac = typeof a.created_at === "string" ? a.created_at : ""
+    const bc = typeof b.created_at === "string" ? b.created_at : ""
+    if (ac !== bc) return bc.localeCompare(ac)
+    const au = typeof a.updated_at === "string" ? a.updated_at : ""
+    const bu = typeof b.updated_at === "string" ? b.updated_at : ""
+    return bu.localeCompare(au)
+  })
+
+  const qualifying: ResumableAppleHealthIngest[] = []
+  for (const row of ordered) {
+    const resumable = evaluateResumableAppleHealthRun(row)
+    if (resumable) qualifying.push(resumable)
+  }
+
+  let tipId: string | null = null
+  let tipDenylisted = false
+  for (const row of ordered) {
     const ingestRunId = String(row.id)
-    if (PAUSED_APPLE_HEALTH_INGEST_RUN_IDS.has(ingestRunId)) continue
-
     const stats =
       row.stats && typeof row.stats === "object"
         ? (row.stats as Record<string, unknown>)
         : null
-    if (!stats) continue
-
-    const kind = stats.document_kind
-    if (kind != null && kind !== "apple_health_export") continue
-
-    const ah = readAppleHealthPersistFromUnknown(stats.apple_health_persist)
-    const cloud = cloudFactPersistFromUnknown(stats.cloud_fact_persist)
-
-    // Need some AH signal (parse started or cloud cursor).
-    if (!ah && !cloud) continue
-
-    if (
-      isAppleHealthIngestFullyComplete({
-        appleHealthPersist: ah,
-        cloudFactPersist: cloud,
-      })
-    ) {
-      continue
-    }
-
-    const fileId =
-      typeof stats.file_id === "string" && stats.file_id.trim()
-        ? stats.file_id.trim()
-        : null
-    if (!fileId) continue
-
-    // Resumable: parse incomplete, cloud incomplete, or stale/partial running.
-    const parseIncomplete = ah != null && ah.complete === false
-    const cloudIncomplete =
-      ah?.complete === true &&
-      appleHealthCloudFactsPending({
-        appleHealthPersist: ah,
-        cloudFactPersist: cloud,
-      })
-    const partialOrRunning =
-      row.status === "partial" || row.status === "running"
-
-    if (!partialOrRunning) continue
-    if (!parseIncomplete && !cloudIncomplete && !ah) continue
-    // orphan running with AH persist present (even complete=false) is OK
-    if (!parseIncomplete && !cloudIncomplete) continue
-
-    return {
-      ingestRunId,
-      fileId,
-      status: String(row.status),
-      cloudFactPersist: cloud,
-      appleHealthPersist: ah,
-      appleHealthPersistComplete: ah?.complete === true,
-      batchCount: ah?.batchCount ?? cloud?.batchCount ?? 0,
-      updatedAt: typeof row.updated_at === "string" ? row.updated_at : null,
-    }
+    if (!stats || !isAppleHealthDocumentStats(stats)) continue
+    tipId = ingestRunId
+    tipDenylisted = PAUSED_APPLE_HEALTH_INGEST_RUN_IDS.has(ingestRunId)
+    break
   }
 
-  return null
+  const current =
+    tipId == null || tipDenylisted
+      ? null
+      : (qualifying.find((run) => run.ingestRunId === tipId) ?? null)
+
+  const previous = qualifying.filter(
+    (run) => run.ingestRunId !== current?.ingestRunId
+  )
+
+  return { current, previous }
+}
+
+/**
+ * Discover current + historical resumable Apple Health runs for the signed-in user.
+ * Does not start processing. Never re-uploads a ZIP.
+ */
+export async function discoverAppleHealthResumableIngests(
+  supabase: SupabaseClient
+): Promise<AppleHealthResumableDiscovery> {
+  const empty: AppleHealthResumableDiscovery = { current: null, previous: [] }
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return empty
+
+  const { data, error } = await supabase
+    .from("ingest_runs")
+    .select("id, status, stats, updated_at, created_at")
+    .eq("user_id", user.id)
+    .in("status", ["queued", "running", "partial", "succeeded", "failed"])
+    .order("created_at", { ascending: false })
+    .limit(50)
+
+  if (error || !data) return empty
+  return classifyAppleHealthResumableRuns(data as AppleHealthIngestRunRow[])
+}
+
+/**
+ * @deprecated Prefer discoverAppleHealthResumableIngests().current
+ * Returns only the primary/current resumable run (never a historical hijack).
+ */
+export async function findResumableAppleHealthIngest(
+  supabase: SupabaseClient
+): Promise<ResumableAppleHealthIngest | null> {
+  const discovery = await discoverAppleHealthResumableIngests(supabase)
+  return discovery.current
 }

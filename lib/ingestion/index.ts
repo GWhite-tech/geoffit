@@ -49,12 +49,18 @@ export type {
 } from "./client/start-document-ingest"
 export {
   continueAppleHealthIngest,
+  discoverAppleHealthResumableIngests,
   findResumableAppleHealthIngest,
+  classifyAppleHealthResumableRuns,
+  evaluateResumableAppleHealthRun,
+  formatAppleHealthResumableDate,
+  formatAppleHealthResumableSummary,
   isCloudFactPersistFinished,
   PAUSED_APPLE_HEALTH_INGEST_RUN_IDS,
   decideAfterTransportFailure,
 } from "./client/continue-apple-health-ingest"
 export type {
   AppleHealthContinueProgress,
+  AppleHealthResumableDiscovery,
   ResumableAppleHealthIngest,
 } from "./client/continue-apple-health-ingest"
